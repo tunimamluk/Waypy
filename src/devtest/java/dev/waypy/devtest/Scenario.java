@@ -103,9 +103,6 @@ final class Scenario {
 	private Waypoint expiryProbe;
 	private List<BlockPos> expiryProbeBlocks;
 	private long expiryProbeDeletedAt;
-	/** The two-block waypoint whose second block is removed for the real-time expiry check of a block removal. */
-	private Waypoint blockProbe;
-	private static final BlockPos BLOCK_PROBE_POS = new BlockPos(27, SURFACE_Y, -28);
 
 	Scenario(Minecraft mc) {
 		this.mc = mc;
@@ -133,7 +130,7 @@ final class Scenario {
 		step("N hold rules (skip, cap, limit, cancel)", () -> true, this::checkKeyRules, 5);
 		step("new waypoint defaults", () -> true, this::checkDefaults, 2);
 		step("undo via N, forced expiry", () -> true, this::checkUndo, 2);
-		step("N extend-or-remove, block undo", () -> true, this::checkExtendOrRemove, 2);
+		step("N extend, erase strokes, tap (no block undo)", () -> true, this::checkExtendOrRemove, 2);
 		step("groups: create, dimensions, dissolve, undo", () -> true, this::checkGroups, 2);
 		step("create group Mine Area", () -> true, this::createMineArea, 2);
 		step("start real-time undo expiry probe", () -> true, this::startExpiryProbe, 2);
@@ -505,7 +502,7 @@ final class Scenario {
 		keys.release(mc);
 		check(w.size() == 4 && w.contains(extra) && wm.waypointAt(extra, dim) == w && w.contains(blocks.get(2)),
 				"undo + hold did not extend the restored waypoint (or the release removed a block): " + w.blocks());
-		check(wm.lastUndo().isEmpty(), "the restore-press release left an undo entry");
+		check(wm.lastDeleted().isEmpty(), "the restore-press release left an undo entry");
 		DevtestClient.log("ASSERT ok: whole-waypoint undo via N restored " + before + ", then the same hold extended it to "
 				+ w.size() + " blocks; its release removed nothing");
 
@@ -540,8 +537,10 @@ final class Scenario {
 
 	/**
 	 * The N key on an existing waypoint, through the real handler (press / extend / release with explicit targets):
-	 * hold = extend from its block, tap = remove that block (or the whole single-block waypoint), N on a removed block
-	 * within 15 s = undo, and the same hold then extends.
+	 * the first target off the start block decides the hold. A free block = extend; a block of the waypoint itself =
+	 * erase stroke (final block removals, a stroke over the last block deletes the waypoint, undoable as the original);
+	 * a block of another waypoint is ignored. A tap removes the start block (final), or deletes a single-block
+	 * waypoint (undoable); N on a removed block then creates a new waypoint.
 	 */
 	private void checkExtendOrRemove() {
 		WaypointManager wm = WaypointManager.get();
@@ -551,7 +550,7 @@ final class Scenario {
 		BlockPos b32 = new BlockPos(32, SURFACE_Y, -32), b33 = new BlockPos(33, SURFACE_Y, -32);
 		BlockPos b34 = new BlockPos(34, SURFACE_Y, -32), b35 = new BlockPos(35, SURFACE_Y, -32);
 
-		// 1. Extend a single waypoint into a clump, starting the hold on its block.
+		// 1. Extend stroke: a single waypoint grows into a clump, starting the hold on its block.
 		Waypoint w = keys.press(mc, b32, false);
 		keys.release(mc);
 		check(w != null && w.size() == 1 && keys.hold() == CreateKeyHandler.Hold.IDLE, "single waypoint not created");
@@ -561,59 +560,129 @@ final class Scenario {
 		check(keys.press(mc, b32, false) == w && keys.hold() == CreateKeyHandler.Hold.EXTEND_OR_REMOVE,
 				"N on a waypoint block did not start an extend-or-remove hold");
 		check(wm.byId(w.id).isPresent() && w.size() == 1, "the press on a waypoint changed it");
-		keys.extend(mc, b32); // still on the start block: nothing
-		check(keys.addedBlocks() == 0, "the start block counted as added");
+		keys.extend(mc, b32); // still on the start block: nothing, still undecided
+		check(keys.addedBlocks() == 0 && keys.hold() == CreateKeyHandler.Hold.EXTEND_OR_REMOVE, "the start block decided the mode");
 		keys.extend(mc, b33);
+		check(keys.hold() == CreateKeyHandler.Hold.EXTEND, "a free block did not decide EXTEND: " + keys.hold());
 		keys.extend(mc, b34);
+		keys.extend(mc, b32); // back on its own block while extending: skipped, nothing removed
 		keys.extend(mc, b35);
 		keys.release(mc);
 		check(w.blocks().equals(List.of(b32, b33, b34, b35)), "extend from the waypoint's block gave " + w.blocks());
 		for (BlockPos pos : w.blocks()) check(wm.waypointAt(pos, dim) == w, "index lacks " + pos + " after the extend");
 		check(w.style == WaypointStyle.BLOCK_HIGHLIGHT && !w.isBeacon(), "extended beacon not forced to Block Selection");
-		check(wm.lastUndo().isEmpty(), "an extend left an undo entry");
+		check(wm.lastDeleted().isEmpty(), "an extend left an undo entry");
+		DevtestClient.log("ASSERT ok: extend stroke from a waypoint's block (free block first -> EXTEND) -> " + w.size()
+				+ "-block clump " + w.blocks() + ", own blocks skipped, BEACON forced to " + w.style);
+
+		// 2. Erase stroke over 3 blocks, starting on the anchor: the anchor moves, index and mesh follow, fields stay.
+		BlockPos b36 = new BlockPos(36, SURFACE_Y, -32), b37 = new BlockPos(37, SURFACE_Y, -32);
+		keys.press(mc, b35, false);
+		keys.extend(mc, b36);
+		keys.extend(mc, b37);
+		keys.release(mc);
+		check(w.blocks().equals(List.of(b32, b33, b34, b35, b36, b37)), "setup extend gave " + w.blocks());
 		String fields = fields(w);
-		DevtestClient.log("ASSERT ok: extend from a single waypoint's block -> " + w.size() + "-block clump " + w.blocks()
-				+ ", start block kept, BEACON forced to " + w.style);
-
-		// 2. Tap a clump block (not the anchor): only that block goes; index and mesh follow.
 		int version = w.version();
-		keys.press(mc, b33, false);
+		check(keys.press(mc, b32, false) == w && keys.hold() == CreateKeyHandler.Hold.EXTEND_OR_REMOVE, "erase press not on W");
+		keys.extend(mc, b33); // a block of W first: ERASE, removes the start block (anchor) and b33
+		check(keys.hold() == CreateKeyHandler.Hold.ERASE && keys.erasedBlocks() == 2, "W's block did not decide ERASE: "
+				+ keys.hold() + " erased " + keys.erasedBlocks());
+		BlockPos free = new BlockPos(33, SURFACE_Y, -31);
+		keys.extend(mc, free); // a free block in ERASE mode: ignored, not added
+		keys.extend(mc, b32); // the erased start block, now free: ignored
+		keys.extend(mc, b34);
 		keys.release(mc);
-		check(w.blocks().equals(List.of(b32, b34, b35)) && wm.byId(w.id).isPresent(), "tap on b33 gave " + w.blocks());
-		check(wm.waypointAt(b33, dim) == null && wm.waypointAt(b32, dim) == w && wm.waypointAt(b35, dim) == w,
-				"index out of sync after the block removal");
-		check(w.version() != version, "version not bumped by the block removal");
+		check(w.blocks().equals(List.of(b35, b36, b37)) && w.anchor().equals(b35), "erase stroke gave " + w.blocks());
+		check(wm.waypointAt(free, dim) == null && wm.waypointAt(b32, dim) == null && wm.waypointAt(b33, dim) == null
+				&& wm.waypointAt(b34, dim) == null, "index still has erased (or a free) block");
+		for (BlockPos pos : w.blocks()) check(wm.waypointAt(pos, dim) == w, "index lacks " + pos + " after the erase");
+		check(w.version() != version, "version not bumped by the erase");
+		check(fields(w).equals(fields), "fields changed by the erase:\n  " + fields(w) + "\n  " + fields);
 		checkMesh(w);
-		check(wm.lastUndo().orElse(null) instanceof WaypointManager.RemovedBlock r && r.pos().equals(b33) && r.waypointId().equals(w.id),
-				"block removal not pending for undo");
-		// Tap the anchor: the next block becomes the anchor, every other field stays.
-		keys.press(mc, b32, false);
-		keys.release(mc);
-		check(w.blocks().equals(List.of(b34, b35)) && w.anchor().equals(b34), "anchor tap gave " + w.blocks());
-		check(fields(w).equals(fields), "fields changed by the block removals:\n  " + fields(w) + "\n  " + fields);
-		check(wm.waypointAt(b32, dim) == null, "index still has the removed anchor");
-		checkMesh(w);
-		DevtestClient.log("ASSERT ok: tap on clump blocks removed only them -> " + w.blocks() + ", anchor moved to " + w.anchor()
-				+ ", index and mesh (version " + w.version() + ") in sync, fields unchanged");
+		check(wm.lastDeleted().isEmpty() && keys.hold() == CreateKeyHandler.Hold.IDLE, "the erase stroke left an undo entry");
+		DevtestClient.log("ASSERT ok: erase stroke over 3 blocks " + List.of(b32, b33, b34) + " -> " + w.blocks() + ", anchor moved to "
+				+ w.anchor() + ", free blocks ignored, index and mesh (version " + w.version() + ") in sync, no undo entry");
 
-		// 3. Undo a block removal with N, and keep holding to extend in the same press.
-		check(keys.press(mc, b33, false) == w && keys.hold() == CreateKeyHandler.Hold.RESTORED, "N on the removed block did not restore it");
-		check(w.contains(b33) && wm.waypointAt(b33, dim) == w, "restored block not back in the waypoint/index");
-		BlockPos b33s = new BlockPos(33, SURFACE_Y, -33);
-		keys.extend(mc, b33s);
+		// 3. A tap on a clump block removes only it, final: N on that block then creates a NEW waypoint (no undo).
+		keys.press(mc, b36, false);
 		keys.release(mc);
-		check(w.size() == 4 && w.contains(b33) && w.contains(b33s) && wm.waypointAt(b33s, dim) == w,
-				"undo + hold did not extend: " + w.blocks());
+		check(w.blocks().equals(List.of(b35, b37)) && wm.waypointAt(b36, dim) == null, "tap on b36 gave " + w.blocks());
+		check(wm.lastDeleted().isEmpty(), "a block tap left an undo entry");
 		checkMesh(w);
-		// The anchor removal is undone too (back at index 0); released at once, the restore-press removes nothing.
-		check(keys.press(mc, b32, false) == w && keys.hold() == CreateKeyHandler.Hold.RESTORED, "anchor removal not undone");
+		Waypoint fresh = keys.press(mc, b36, false);
+		check(fresh != null && fresh != w && keys.hold() == CreateKeyHandler.Hold.CREATED && !w.contains(b36)
+				&& wm.waypointAt(b36, dim) == fresh, "N on a removed block did not create a new waypoint");
 		keys.release(mc);
-		check(w.size() == 5 && w.anchor().equals(b32) && wm.waypointAt(b32, dim) == w, "anchor not restored: " + w.blocks());
-		check(wm.lastUndo().isEmpty(), "undo entries left after both block undos");
-		DevtestClient.log("ASSERT ok: block undo via N (\"Block restored\"), same hold extended to " + b33s + "; anchor undo back at "
-				+ w.anchor() + "; restore-press releases removed nothing -> " + w.blocks());
+		BlockPos erasedBefore = b33; // erased by the stroke above: also just free
+		Waypoint fresh2 = keys.press(mc, erasedBefore, false);
+		keys.release(mc);
+		check(fresh2 != null && fresh2 != w && fresh2.size() == 1 && !w.contains(erasedBefore), "N on an erased block restored it");
+		DevtestClient.log("ASSERT ok: tap on clump block " + b36 + " removed it for good (no undo); N on it and on erased block "
+				+ erasedBefore + " created new waypoints \"" + fresh.name + "\", \"" + fresh2.name + "\"");
+		wm.remove(fresh.id);
+		wm.remove(fresh2.id);
+		wm.expireDeletions(true);
 
-		// 4. Down to one block it keeps its style, may become a beacon, and growing back forces Block Selection.
+		// 4. An erase stroke that hits another waypoint's block first: ignored (undecided), then W's block -> ERASE.
+		BlockPos c0 = new BlockPos(32, SURFACE_Y, -38), c1 = new BlockPos(33, SURFACE_Y, -38), c2 = new BlockPos(34, SURFACE_Y, -38);
+		BlockPos c3 = new BlockPos(35, SURFACE_Y, -38), o0 = new BlockPos(33, SURFACE_Y, -39);
+		Waypoint other = keys.press(mc, o0, false);
+		keys.extend(mc, new BlockPos(34, SURFACE_Y, -39));
+		keys.release(mc);
+		Waypoint four = holdOver(keys, List.of(c0, c1, c2, c3), false);
+		List<BlockPos> otherBefore = List.copyOf(other.blocks());
+		String otherFields = fields(other);
+		keys.press(mc, c1, false);
+		keys.extend(mc, o0); // another waypoint's block first: ignored
+		check(keys.hold() == CreateKeyHandler.Hold.EXTEND_OR_REMOVE, "another waypoint's block decided the mode: " + keys.hold());
+		keys.extend(mc, c2); // W's block: ERASE
+		check(keys.hold() == CreateKeyHandler.Hold.ERASE, "W's block after another waypoint did not decide ERASE: " + keys.hold());
+		keys.extend(mc, new BlockPos(34, SURFACE_Y, -39)); // the other waypoint again: ignored in ERASE
+		keys.release(mc);
+		check(four.blocks().equals(List.of(c0, c3)), "erase after another waypoint's block gave " + four.blocks());
+		check(other.blocks().equals(otherBefore) && fields(other).equals(otherFields) && wm.byId(other.id).isPresent()
+				&& wm.waypointAt(o0, dim) == other, "the other waypoint was touched: " + other.blocks());
+		DevtestClient.log("ASSERT ok: stroke over another waypoint's block first stayed undecided, then W's block -> ERASE; "
+				+ four.name + " -> " + four.blocks() + ", " + other.name + " untouched " + other.blocks());
+
+		// 5. An erase stroke over every block deletes W; N undo restores the ORIGINAL full waypoint (incl. its group).
+		BlockPos e0 = new BlockPos(40, SURFACE_Y, -38), e1 = new BlockPos(41, SURFACE_Y, -38), e2 = new BlockPos(42, SURFACE_Y, -38);
+		BlockPos e3 = new BlockPos(42, SURFACE_Y, -37);
+		Waypoint whole = holdOver(keys, List.of(e0, e1, e2, e3), false);
+		whole.setName("Erase All");
+		whole.color = 0x654321;
+		WaypointGroup g = wm.createGroup(List.of(other, whole, four));
+		check(g != null && wm.members(g).equals(List.of(other, whole, four)), "group for the erase test not made");
+		String original = describe(whole);
+		List<BlockPos> originalBlocks = List.copyOf(whole.blocks());
+		keys.press(mc, e1, false);
+		keys.extend(mc, e2); // ERASE: e1, e2
+		keys.extend(mc, e3);
+		check(wm.byId(whole.id).isPresent() && whole.blocks().equals(List.of(e0)) && keys.erasedBlocks() == 3,
+				"erase stroke before the last block gave " + whole.blocks());
+		check(wm.members(g).contains(whole), "a member losing blocks left its group");
+		keys.extend(mc, e0); // the last block: the waypoint is deleted, the hold ends
+		check(wm.byId(whole.id).isEmpty() && keys.hold() == CreateKeyHandler.Hold.IDLE && keys.isWaitingForKeyUp(),
+				"erasing the last block did not delete the waypoint and end the hold: " + keys.hold());
+		for (BlockPos pos : originalBlocks) check(wm.waypointAt(pos, dim) == null, "index still has " + pos + " after the erase delete");
+		check(wm.members(g).equals(List.of(other, four)), "deleted member still in its group: " + names(wm.members(g)));
+		check(wm.lastDeleted().map(d -> d.waypoint() == whole && d.waypoint().blocks().equals(originalBlocks)).orElse(false),
+				"the deletion's undo entry does not hold the original blocks");
+		keys.extend(mc, e1); // key still down: nothing
+		keys.release(mc);
+		check(!keys.isWaitingForKeyUp() && wm.byId(whole.id).isEmpty(), "release after the erase delete changed something");
+		check(keys.press(mc, e2, false) == whole && keys.hold() == CreateKeyHandler.Hold.RESTORED, "N on an erased block did not undo");
+		keys.release(mc);
+		check(describe(whole).equals(original) && whole.blocks().equals(originalBlocks) && whole.anchor().equals(e0),
+				"undo did not restore the original waypoint:\n  " + describe(whole) + "\n  " + original);
+		for (BlockPos pos : originalBlocks) check(wm.waypointAt(pos, dim) == whole, "index lacks " + pos + " after the undo");
+		check(wm.members(g).equals(List.of(other, whole, four)), "undo did not put it back in its group: " + names(wm.members(g)));
+		checkMesh(whole);
+		DevtestClient.log("ASSERT ok: erase stroke over all " + originalBlocks.size() + " blocks deleted \"" + whole.name
+				+ "\" (left its group, hold ended until key-up); N undo restored the original " + whole.blocks() + " into its group");
+
+		// 6. Down to one block a clump keeps its style and may become a beacon; growing again forces Block Selection.
 		Waypoint pair = keys.press(mc, new BlockPos(32, SURFACE_Y, -35), false);
 		keys.extend(mc, new BlockPos(33, SURFACE_Y, -35));
 		keys.release(mc);
@@ -622,30 +691,31 @@ final class Scenario {
 		check(pair.size() == 1 && !pair.isClump() && pair.style == WaypointStyle.BLOCK_HIGHLIGHT, "pair not down to one block");
 		pair.style = WaypointStyle.BEACON;
 		check(pair.isBeacon(), "a single block left of a clump can't be a beacon");
-		keys.press(mc, new BlockPos(33, SURFACE_Y, -35), false); // undo
+		keys.press(mc, new BlockPos(32, SURFACE_Y, -35), false);
+		keys.extend(mc, new BlockPos(32, SURFACE_Y, -36));
 		keys.release(mc);
-		check(pair.size() == 2 && pair.style == WaypointStyle.BLOCK_HIGHLIGHT, "block undo did not force Block Selection");
-		DevtestClient.log("ASSERT ok: clump down to 1 block keeps its style and may be a beacon; block undo back to 2 forces " + pair.style);
+		check(pair.size() == 2 && pair.style == WaypointStyle.BLOCK_HIGHLIGHT, "growing back to 2 did not force Block Selection");
 
-		// 5. Tap a single-block waypoint: the whole waypoint goes (undoable); N on it again restores it and the hold extends.
+		// 7. Tap a single-block waypoint: the whole waypoint goes (undoable); N on it again restores it and the hold extends.
 		BlockPos b38 = new BlockPos(38, SURFACE_Y, -32), b39 = new BlockPos(39, SURFACE_Y, -32), b40 = new BlockPos(40, SURFACE_Y, -32);
 		Waypoint single = keys.press(mc, b38, false);
 		keys.release(mc);
 		keys.press(mc, b38, false);
 		keys.release(mc);
 		check(wm.byId(single.id).isEmpty() && wm.waypointAt(b38, dim) == null, "tap on a single-block waypoint did not delete it");
-		check(wm.lastUndo().orElse(null) instanceof WaypointManager.DeletedWaypoint d && d.waypoint() == single, "deletion not pending");
-		DevtestClient.log("ASSERT ok: tap on single-block waypoint \"" + single.name + "\" deleted it (undoable)");
+		check(wm.lastDeleted().map(d -> d.waypoint() == single).orElse(false), "deletion not pending");
 		check(keys.press(mc, b38, false) == single && keys.hold() == CreateKeyHandler.Hold.RESTORED, "N did not restore the deleted waypoint");
 		keys.extend(mc, b39);
 		keys.extend(mc, b40);
 		keys.release(mc);
 		check(wm.byId(single.id).isPresent() && single.blocks().equals(List.of(b38, b39, b40)), "restore + extend gave " + single.blocks());
 		for (BlockPos pos : single.blocks()) check(wm.waypointAt(pos, dim) == single, "index lacks " + pos);
-		DevtestClient.log("ASSERT ok: whole-waypoint undo via N then extend in the same press -> " + single.blocks());
+		DevtestClient.log("ASSERT ok: tap on single-block waypoint \"" + single.name + "\" deleted it; N undo then extend in the same press -> "
+				+ single.blocks());
 
-		for (Waypoint x : List.of(w, pair, single)) wm.remove(x.id);
+		for (Waypoint x : List.of(w, pair, single, other, four, whole)) wm.remove(x.id);
 		wm.expireDeletions(true);
+		check(wm.groups().isEmpty(), "groups left after the erase checks: " + wm.groups());
 		wm.select(beaconBlock.id);
 	}
 
@@ -733,7 +803,7 @@ final class Scenario {
 		check(wm.members(g).equals(List.of(b, c)), "group after deleting a: " + names(wm.members(g)));
 		wm.remove(c.id);
 		check(wm.groupById(g.id).isEmpty() && !wm.groups().contains(g) && wm.groupOf(b.id) == null, "group with 1 member not dissolved");
-		check(wm.undo(wm.lastUndo().orElseThrow()) == c && wm.undo(wm.lastUndo().orElseThrow()) == a, "undo of the deletions failed");
+		check(wm.undo(wm.lastDeleted().orElseThrow()) == c && wm.undo(wm.lastDeleted().orElseThrow()) == a, "undo of the deletions failed");
 		check(wm.groupOf(a.id) == null && wm.groupOf(c.id) == null && wm.groupById(g.id).isEmpty(), "undo after dissolve restored a group");
 		DevtestClient.log("ASSERT ok: deleting down to 1 member dissolved the group; undo brought the waypoints back ungrouped");
 
@@ -927,8 +997,7 @@ final class Scenario {
 	}
 
 	/**
-	 * Deletes a waypoint and removes a block of another with N now; {@link #checkExpiryProbe} checks neither can be
-	 * undone once 15 s have passed.
+	 * Deletes a waypoint with an N tap now; {@link #checkExpiryProbe} checks it can't be undone once 15 s have passed.
 	 */
 	private void startExpiryProbe() {
 		WaypointManager wm = WaypointManager.get();
@@ -941,16 +1010,6 @@ final class Scenario {
 		expiryProbeBlocks = List.copyOf(expiryProbe.blocks());
 		keys.press(mc, pos, false); // tap on a single-block waypoint: deletes it
 		keys.release(mc);
-		// A block removal on a two-block waypoint, at the same time.
-		blockProbe = keys.press(mc, new BlockPos(26, SURFACE_Y, -28), false);
-		keys.extend(mc, BLOCK_PROBE_POS);
-		keys.release(mc);
-		blockProbe.setName("Block Probe");
-		keys.press(mc, BLOCK_PROBE_POS, false); // tap: removes that block
-		keys.release(mc);
-		check(blockProbe.size() == 1 && !blockProbe.contains(BLOCK_PROBE_POS), "block probe: block not removed");
-		check(wm.lastUndo().orElse(null) instanceof WaypointManager.RemovedBlock r && r.pos().equals(BLOCK_PROBE_POS)
-				&& wm.canUndo(r) && wm.remainingUndoMillis(r) > 14_000, "block probe removal not pending");
 		expiryProbeDeletedAt = Util.getMillis();
 		var pending = wm.lastDeleted().orElse(null);
 		check(pending != null && pending.waypoint() == expiryProbe && wm.canUndo(pending), "expiry probe deletion not pending");
@@ -971,17 +1030,9 @@ final class Scenario {
 		Waypoint created = keys.press(mc, expiryProbeBlocks.getFirst(), false);
 		keys.release(mc);
 		check(created != null && !created.id.equals(expiryProbe.id), "N on the expired probe's block did not create a new waypoint");
-		// The block removal expired too: N on that block creates a new waypoint instead of restoring it.
-		check(wm.lastUndo().isEmpty(), "undo entries still pending after " + age + " ms");
-		Waypoint fresh = keys.press(mc, BLOCK_PROBE_POS, false);
-		keys.release(mc);
-		check(fresh != null && fresh != blockProbe && blockProbe.size() == 1 && !blockProbe.contains(BLOCK_PROBE_POS),
-				"N on the expired removed block restored it");
 		wm.remove(created.id);
-		wm.remove(fresh.id);
-		wm.remove(blockProbe.id);
 		wm.expireDeletions(true);
-		DevtestClient.log("ASSERT ok: real-time expiry: deleted probe and removed block both gone for good after " + age + " ms");
+		DevtestClient.log("ASSERT ok: real-time expiry: deleted probe gone for good after " + age + " ms");
 	}
 
 	/**
@@ -1116,27 +1167,30 @@ final class Scenario {
 			DevtestClient.log("menu Delete (no confirm) + Undo OK: " + undoSnapshot);
 		}, 10);
 		screenshot("18_menu_undone");
-		step("menu: Undo a block removal", this::noPendingScreenshots, () -> {
+		step("menu: no Undo for a block removal", this::noPendingScreenshots, () -> {
 			WaypointManager wm = WaypointManager.get();
 			CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
 			mc.gui.setScreen(null);
 			List<BlockPos> before = List.copyOf(stairStack.blocks());
 			BlockPos last = before.getLast();
-			keys.press(mc, last, false); // tap on a Stair Stack block
+			var pendingBefore = wm.lastDeleted().orElse(null); // the expiry probe's deletion may still be pending
+			keys.press(mc, last, false); // tap on a Stair Stack block: final
 			keys.release(mc);
 			check(stairStack.size() == before.size() - 1 && !stairStack.contains(last), "tap did not remove the Stair Stack block");
+			check(wm.lastDeleted().orElse(null) == pendingBefore, "a block removal changed the pending deletions");
 			screen[0] = new WaypointScreen(floorPatch);
 			mc.gui.setScreen(screen[0]);
 			Button undo = screen[0].undoButton();
-			check(undo != null && undo.visible && undo.active, "Undo button not offered for a block removal");
-			screen[0].undoDelete();
-			check(stairStack.blocks().equals(before) && WaypointManager.get().waypointAt(last, mc.level.dimension()) == stairStack,
-					"menu Undo did not restore the block: " + stairStack.blocks());
-			check(screen[0].selectedWaypoint() == stairStack, "menu Undo did not select the waypoint of the restored block");
-			Button after = screen[0].undoButton();
-			check(after != null && !after.visible && wm.lastUndo().isEmpty(), "Undo still offered after the block undo");
-			DevtestClient.log("ASSERT ok: menu Undo restored the block " + last + " removed by an N tap (Stair Stack back to "
-					+ stairStack.size() + " blocks, selected)");
+			check(undo != null && undo.visible == (pendingBefore != null), "Undo offered for a block removal (visible=" + undo.visible + ")");
+			if (pendingBefore == null) {
+				screen[0].undoDelete(); // nothing to undo: a no-op
+				check(!stairStack.contains(last), "menu Undo restored a removed block");
+			}
+			// Put the block back (by extending) so the later load checks see the full Stair Stack.
+			check(wm.addBlock(stairStack, last) == WaypointManager.AddBlockResult.ADDED && stairStack.blocks().equals(before),
+					"Stair Stack not re-extended: " + stairStack.blocks());
+			DevtestClient.log("ASSERT ok: menu Undo is only offered for whole-waypoint deletions: after the N tap removed " + last
+					+ " from Stair Stack the button " + (pendingBefore == null ? "stayed hidden" : "still offered only \"" + pendingBefore.name() + "\""));
 		}, 10);
 		step("menu: close", this::noPendingScreenshots, () -> mc.gui.setScreen(null), 5);
 	}

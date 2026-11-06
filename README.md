@@ -20,14 +20,14 @@ Put the jar in your `.minecraft/mods` folder.
 | Key | Action |
 |---|---|
 | `N` on empty ground | Make a new waypoint on the block you stand on. Hold `N` and walk to make a clump: every block you walk over joins it (up to 256 blocks; blocks of other waypoints are skipped) |
-| `N` on a waypoint | Tap to remove that one block from it (or the whole waypoint if it is a single block). Hold `N` and walk to extend it instead: the blocks you walk over join it and nothing is removed |
-| `N` again within 15 s | Undo: press `N` on the removed block (or on any block of the removed waypoint) to bring it back exactly as it was. Keep holding and walk to extend it in the same press |
-| `Left Shift` + `N` | The same on the block you look at, up to 512 blocks away. Hold it and sweep the crosshair to paint blocks |
+| `N` on a waypoint | Tap to remove that one block from it (or the whole waypoint if it is a single block). Hold `N` on a waypoint and walk onto new ground to extend it, or walk over its own blocks to erase them. The first block you step onto decides which (stepping over another waypoint does not count) |
+| `N` again within 15 s | Undo a deleted waypoint: press `N` on any of its blocks to bring it back exactly as it was. Keep holding and walk to extend it in the same press |
+| `Left Shift` + `N` | The same on the block you look at, up to 512 blocks away. Hold it and sweep the crosshair to paint or erase blocks |
 | `M` | Open the Waypy menu |
 
 A clump is one waypoint made of several blocks. It is always drawn as Block Selection (one merged shape), with the logo floating above its centre. Tapping `N` on one of its blocks removes just that block; if it was the first block, the next one takes over the position. Parts that end up apart stay one waypoint. A clump that is down to one block can be a Beacon again.
 
-Creating and extending are silent. Removing shows `Block removed from "<name>" (<n> blocks left) – press N to undo` or `Waypoint "<name>" removed – press N to undo`, and you have 15 seconds to undo. Nothing comes back if another waypoint has taken the block in the meantime, and leaving the world makes removals final.
+Creating and extending are silent. Removing blocks from a clump is final: it shows `Block removed from "<name>" (<n> blocks left)`, or while erasing `Erasing "<name>": 5 blocks removed` and then `Removed 5 blocks from "<name>" (7 left)`, and there is no undo; the freed block is plain ground again. Deleting a whole waypoint (a tap on a single block, erasing a clump's last block, or the menu's Delete) shows `Waypoint "<name>" removed – press N to undo`, and you have 15 seconds to undo it. A clump erased away completely comes back with all the blocks it had before you started erasing. Nothing comes back if another waypoint has taken one of its blocks in the meantime, and leaving the world makes deletions final.
 
 All three keys can be rebound under Options → Controls → Key Binds → Waypy: "Create/Delete Waypoint" (`N`), "Look-at Modifier" (`Left Shift`; sharing it with Sneak works) and "Open Waypoint Menu" (`M`).
 
@@ -43,7 +43,7 @@ The menu lists the waypoints of the current world on the left and edits the sele
 - for Block Selection, an opacity slider and a "Render through blocks" option (off by default)
 - a Visible toggle
 
-**Delete** removes the selected waypoint right away (it is greyed out while a group or several waypoints are selected); an **Undo** button appears next to it for 15 seconds. Undo brings back the last thing you removed, a whole waypoint or a single block taken off with `N`.
+**Delete** removes the selected waypoint right away (it is greyed out while a group or several waypoints are selected); an **Undo** button appears next to it for 15 seconds. Undo brings back the last deleted waypoint (deleted here or with `N`). Blocks removed from a clump can't be undone.
 
 Clumps show their block count in the list and in the editor.
 
@@ -54,7 +54,7 @@ A group bundles nearby waypoints (2 or more, in the same dimension) so that from
 - **Select several waypoints** in the list: `Ctrl`+click adds or removes one, `Shift`+click selects a range, a plain click goes back to one. The editor then shows "N waypoints selected" and a **Make group** button (greyed out if the waypoints are in different dimensions).
 - The list shows each group as a row ("Mine Area · 3 waypoints") with its waypoints indented under it. Click the group row to edit the group: name, color, logo (a block, or None for the name's initial), Text, the **Combine distance** and **Ungroup** (the waypoints stay, just ungrouped).
 - A group member's editor shows "Group: <name>" and a **Remove from group** button. A waypoint is in at most one group; making a new group with it moves it out of its old one.
-- A group needs at least 2 waypoints: when removing or deleting leaves only one, the group goes away by itself. Undoing the deletion of a member puts it back into its group if the group still exists.
+- A group needs at least 2 waypoints: when removing or deleting leaves only one, the group goes away by itself. A member that only loses blocks stays in its group. Undoing the deletion of a member puts it back into its group if the group still exists.
 - **In the world:** while you are farther than the combine distance (15 blocks by default) from the middle of the group, its waypoints are replaced by one pin in the group's color, with the label "Name (3) (124m)" when its Text is on; their highlights and beams are hidden too. Come closer and the waypoints show again. The pins crossfade, and there is a 1-block margin so standing right at the edge doesn't flicker. Hidden waypoints don't count; a group with fewer than 2 visible waypoints always shows its waypoints.
 
 Changes apply live and are saved when you close the menu.

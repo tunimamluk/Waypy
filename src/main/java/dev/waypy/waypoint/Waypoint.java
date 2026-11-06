@@ -21,8 +21,8 @@ import net.minecraft.world.phys.Vec3;
  * so the change is persisted. Use {@link #setName(String)} (or {@link #MAX_NAME_LENGTH}) to respect the length limit.
  *
  * <p>The blocks are encapsulated: ordered (first added first), unique and never empty. The first block is the
- * {@link #anchor()}. Blocks are added only through {@link WaypointManager#addBlock} (or an undo), removed only
- * through {@link WaypointManager#removeBlock}, which keep the manager's block index in sync, and moved only through
+ * {@link #anchor()}. Blocks are added only through {@link WaypointManager#addBlock}, removed only through
+ * {@link WaypointManager#removeBlock} (final, no undo), which keep the manager's block index in sync, and moved only through
  * {@link WaypointManager#move}. Every change bumps {@link #version()}, so renderers can cache geometry built from the
  * blocks.
  */
@@ -138,16 +138,21 @@ public final class Waypoint {
 	}
 
 	/**
-	 * Inserts a block at {@code index} (clamped to the list size; 0 makes it the anchor). False if it is already in
-	 * this waypoint or the cap is reached. Only the manager calls this (undo of a block removal).
+	 * Replaces every block with {@code newBlocks} (in order, duplicates dropped, at most {@link #MAX_BLOCKS}); a no-op for
+	 * an empty list. Only the manager calls this, on a waypoint it has just taken out of its list and index (a
+	 * deletion by an erase stroke, whose undo brings back the blocks from before the stroke).
 	 */
-	boolean insertBlockInternal(int index, BlockPos pos) {
-		if (blocks.size() >= MAX_BLOCKS) return false;
-		BlockPos immutable = pos.immutable();
-		if (!blockSet.add(immutable)) return false;
-		blocks.add(Math.clamp(index, 0, blocks.size()), immutable);
+	void setBlocksInternal(List<BlockPos> newBlocks) {
+		if (newBlocks.isEmpty()) return;
+		List<BlockPos> copy = List.copyOf(newBlocks);
+		blocks.clear();
+		blockSet.clear();
+		for (BlockPos pos : copy) {
+			if (blocks.size() >= MAX_BLOCKS) break;
+			BlockPos immutable = pos.immutable();
+			if (blockSet.add(immutable)) blocks.add(immutable);
+		}
 		version++;
-		return true;
 	}
 
 	/**
