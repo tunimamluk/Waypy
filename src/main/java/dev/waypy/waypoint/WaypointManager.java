@@ -98,6 +98,15 @@ public final class WaypointManager {
 		return List.copyOf(out);
 	}
 
+	/** Waypoints in {@code dimension} with {@code visible == true}; a fresh list the caller may keep. Used by rendering. */
+	public synchronized List<Waypoint> visibleIn(ResourceKey<Level> dimension) {
+		List<Waypoint> out = new ArrayList<>();
+		for (Waypoint w : waypoints) {
+			if (w.visible && w.dimension.equals(dimension)) out.add(w);
+		}
+		return out;
+	}
+
 	public synchronized Optional<Waypoint> byId(UUID id) {
 		for (Waypoint w : waypoints) {
 			if (w.id.equals(id)) return Optional.of(w);
