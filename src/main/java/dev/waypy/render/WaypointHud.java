@@ -14,6 +14,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.math.Axis;
 import org.joml.Matrix4f;
 import org.joml.Vector4f;
+import org.jspecify.annotations.Nullable;
 
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement;
 
@@ -39,6 +40,7 @@ import dev.waypy.config.LabelMode;
 import dev.waypy.config.WaypyConfig;
 import dev.waypy.waypoint.LogoType;
 import dev.waypy.waypoint.Waypoint;
+import dev.waypy.waypoint.WaypointGroup;
 import dev.waypy.waypoint.WaypointManager;
 
 /**
@@ -64,6 +66,12 @@ import dev.waypy.waypoint.WaypointManager;
  * nearest the crosshair (within {@link #FOCUS_RADIUS} GUI px of its badge centre) always shows and is drawn on top;
  * with "Labels: Looking At" it is the only tag. Tags shown or hidden by these rules fade in and out over
  * {@link #LABEL_FADE_MILLIS} instead of popping.
+ *
+ * <p>Groups ({@link GroupCombiner}): a combined group draws one pin of its own (group colour and logo, tag
+ * {@code Name (n) (124m)}) above its members, and its members' pins are not drawn. Crossing the threshold crossfades
+ * over {@link #COMBINE_FADE_MILLIS}: member pins fade out while the group pin fades in (and the reverse). Pins and tags
+ * fade by alpha; the item icon (which can't be drawn translucent) switches at the half-way point, and the fading pin
+ * also shrinks slightly ({@link #FADE_MIN_SCALE}) so the switch reads as part of the transition.
  */
 final class WaypointHud implements HudElement {
 	/** Pin tip height above the top face of a BLOCK_HIGHLIGHT waypoint, in blocks. */
@@ -108,11 +116,17 @@ final class WaypointHud implements HudElement {
 	static final float MIN_LABEL_SCALE = 0.5f;
 	/** Time a tag takes to fade fully in or out, in milliseconds. */
 	static final float LABEL_FADE_MILLIS = 175.0f;
+	/** Time a group crossfade (members to group pin or back) takes, in milliseconds. */
+	static final float COMBINE_FADE_MILLIS = 200.0f;
+	/** Scale of a pin at the very start/end of a crossfade (it grows to full size as it fades in). */
+	private static final float FADE_MIN_SCALE = 0.8f;
 	/** Longest frame time a fade advances by (so a hitch doesn't skip a fade). */
 	private static final float MAX_FRAME_MILLIS = 100.0f;
 
-	/** Tag opacity (0..1] per waypoint id, for markers on screen in the last frame. */
+	/** Tag opacity (0..1] per waypoint or group id, for markers on screen in the last frame. */
 	private final Map<UUID, Float> labelAlpha = new HashMap<>();
+	/** Per group id: how far it is toward combined (0 = members shown, 1 = group pin shown). */
+	private final Map<UUID, Float> combineAlpha = new HashMap<>();
 	private long lastFrameNanos;
 
 	private final Map<Identifier, ItemStack> logoStacks = new HashMap<>();
@@ -120,10 +134,25 @@ final class WaypointHud implements HudElement {
 	private final Vector4f clip = new Vector4f();
 
 	/**
-	 * A projected waypoint. {@code x}/{@code y} is the pin tip (the anchor, snapped to a framebuffer pixel);
-	 * {@code logoScale} and {@code labelScale} are the (continuous) pose scales of the pin and of the tag.
+	 * What a pin shows: a waypoint, or a combined group ({@code memberCount > 0}, shown in its tag). {@code id} keys the
+	 * tag fade state (waypoint and group ids are distinct UUIDs).
 	 */
-	private record Marker(Waypoint waypoint, float x, float y, double distance, float logoScale, float labelScale) {
+	record PinSource(UUID id, String name, int color, LogoType logoType, Identifier logoBlock, boolean showText, int memberCount) {
+		static PinSource of(Waypoint w) {
+			return new PinSource(w.id, w.name, w.color, w.logoType, w.logoBlock, w.showText, 0);
+		}
+
+		static PinSource of(WaypointGroup g, int visibleMembers) {
+			return new PinSource(g.id, g.name, g.color, g.logoType, g.logoBlock, g.showText, visibleMembers);
+		}
+	}
+
+	/**
+	 * A projected pin. {@code x}/{@code y} is the pin tip (the anchor, snapped to a framebuffer pixel);
+	 * {@code logoScale} and {@code labelScale} are the (continuous) pose scales of the pin and of the tag; {@code alpha}
+	 * is the pin's opacity (1 except during a group crossfade).
+	 */
+	private record Marker(PinSource source, float x, float y, double distance, float logoScale, float labelScale, float alpha) {
 		/** Y of the badge centre, used for the crosshair focus. */
 		float badgeCentreY() {
 			return y + (BADGE_TOP + BADGE_SIZE / 2.0f) * logoScale;
@@ -143,6 +172,13 @@ final class WaypointHud implements HudElement {
 			return new PinColors(fill, ARGB.opaque(shade), ARGB.opaque(text), !light);
 		}
 
+		/** The same colours at {@code alpha} opacity (0..1), for a pin fading during a group crossfade. */
+		PinColors withAlpha(float alpha) {
+			if (alpha >= 1.0f) return this;
+			return new PinColors(ARGB.multiplyAlpha(fill, alpha), ARGB.multiplyAlpha(shade, alpha),
+					ARGB.multiplyAlpha(text, alpha), textShadow);
+		}
+
 		/** Each channel times {@code f}, rounded (as the design's shade()). */
 		private static int scale(int rgb, float f) {
 			return ARGB.color(255, Math.round(ARGB.red(rgb) * f), Math.round(ARGB.green(rgb) * f), Math.round(ARGB.blue(rgb) * f));
@@ -154,6 +190,11 @@ final class WaypointHud implements HudElement {
 					+ 0.7152 * ARGB.srgbToLinearChannel(ARGB.green(rgb))
 					+ 0.0722 * ARGB.srgbToLinearChannel(ARGB.blue(rgb));
 		}
+	}
+
+	/** Height of a waypoint's pin anchor: over the top face of its highest block, higher for a beacon. */
+	static double anchorY(Waypoint waypoint) {
+		return waypoint.topY() + 1.0 + (waypoint.isBeacon() ? BEACON_LOGO_HEIGHT : HIGHLIGHT_LOGO_HEIGHT);
 	}
 
 	/**
@@ -184,6 +225,7 @@ final class WaypointHud implements HudElement {
 		List<Waypoint> waypoints = WaypointManager.get().visibleIn(minecraft.level.dimension());
 		if (waypoints.isEmpty()) {
 			labelAlpha.clear();
+			combineAlpha.clear();
 			return;
 		}
 
@@ -196,29 +238,42 @@ final class WaypointHud implements HudElement {
 		int guiScale = Math.max(1, renderState.windowRenderState.guiScale);
 		Vec3 cam = camera.pos;
 
-		List<Marker> markers = new ArrayList<>(waypoints.size());
+		// Groups: each one's crossfade moves toward combined (1) or separate (0) by frame time; a group seen for the
+		// first time starts at its target (no fade on joining a world or opening the menu).
+		List<GroupCombiner.View> views = GroupCombiner.compute(minecraft.level.dimension(), cam);
+		float combineStep = frameMillis / COMBINE_FADE_MILLIS;
+		Map<Waypoint, Float> memberAlpha = new IdentityHashMap<>();
+		Map<GroupCombiner.View, Float> groupAlpha = new IdentityHashMap<>();
+		Set<UUID> groupIds = new HashSet<>();
+		for (GroupCombiner.View view : views) {
+			UUID id = view.group().id;
+			groupIds.add(id);
+			float target = view.combined() ? 1.0f : 0.0f;
+			Float previous = combineAlpha.get(id);
+			float alpha = previous == null ? target
+					: target > previous ? Math.min(target, previous + combineStep) : Math.max(target, previous - combineStep);
+			combineAlpha.put(id, alpha);
+			if (alpha > 0.0f) groupAlpha.put(view, alpha);
+			for (Waypoint member : view.members()) memberAlpha.put(member, 1.0f - alpha);
+		}
+		combineAlpha.keySet().retainAll(groupIds);
+
+		List<Marker> markers = new ArrayList<>(waypoints.size() + groupAlpha.size());
 		for (Waypoint waypoint : waypoints) {
+			float alpha = memberAlpha.getOrDefault(waypoint, 1.0f);
+			if (alpha <= 0.0f) continue; // a member of a fully combined group
 			// Above the clump: x/z of the centroid, y over the top face of its highest block.
 			Vec3 centre = waypoint.centre();
-			double height = waypoint.isBeacon() ? BEACON_LOGO_HEIGHT : HIGHLIGHT_LOGO_HEIGHT;
-			double ax = centre.x - cam.x;
-			double ay = waypoint.topY() + 1.0 + height - cam.y;
-			double az = centre.z - cam.z;
-			clip.set((float) ax, (float) ay, (float) az, 1.0f);
-			viewProjection.transform(clip);
-			if (clip.w < MIN_CLIP_W) continue; // behind the camera
-			float ndcX = clip.x / clip.w;
-			float ndcY = clip.y / clip.w;
-			// Generous bounds so a pin partly on screen is still drawn.
-			if (ndcX < -1.5f || ndcX > 1.5f || ndcY < -1.5f || ndcY > 1.5f) continue;
-			// Only the anchor (the pin tip) is snapped to a framebuffer pixel; pin and tag are laid out from it with
-			// whole unscaled offsets, so they never jitter against each other while the scale changes.
-			float x = snap((ndcX * 0.5f + 0.5f) * guiWidth, guiScale);
-			float y = snap((0.5f - ndcY * 0.5f) * guiHeight, guiScale);
-			double distance = centre.distanceTo(cam);
-			// Continuous scales (no quantisation), so pins shrink smoothly while walking away.
-			float scale = distanceScale(distance, config.shrinkWithDistance) * iconSize;
-			markers.add(new Marker(waypoint, x, y, distance, scale, Math.max(MIN_LABEL_SCALE, scale)));
+			Marker marker = project(PinSource.of(waypoint), centre.x, anchorY(waypoint), centre.z, centre.distanceTo(cam),
+					alpha, cam, config, iconSize, guiWidth, guiHeight, guiScale);
+			if (marker != null) markers.add(marker);
+		}
+		for (Map.Entry<GroupCombiner.View, Float> entry : groupAlpha.entrySet()) {
+			GroupCombiner.View view = entry.getKey();
+			// Above the group: x/z of its centre, y over its highest member (each member's own height rule).
+			Marker marker = project(PinSource.of(view.group(), view.members().size()), view.centre().x, view.anchorY(),
+					view.centre().z, view.distance(), entry.getValue(), cam, config, iconSize, guiWidth, guiHeight, guiScale);
+			if (marker != null) markers.add(marker);
 		}
 		if (markers.isEmpty()) {
 			labelAlpha.clear();
@@ -236,7 +291,7 @@ final class WaypointHud implements HudElement {
 		Marker focused = null;
 		float focusedDistSq = FOCUS_RADIUS * FOCUS_RADIUS;
 		for (Marker marker : markers) {
-			if (!marker.waypoint().showText) continue;
+			if (!marker.source().showText()) continue;
 			float ddx = marker.x() - centerX;
 			float ddy = marker.badgeCentreY() - centerY;
 			float distSq = ddx * ddx + ddy * ddy;
@@ -258,7 +313,7 @@ final class WaypointHud implements HudElement {
 			List<Rect> obstacles = new ArrayList<>();
 			for (Label label : shown.values()) obstacles.add(label.rect());
 			for (Marker marker : markers) {
-				if (marker != focused && marker.waypoint().showText) {
+				if (marker != focused && marker.source().showText()) {
 					Label label = label(font, marker, config.showDistance);
 					boolean overlaps = false;
 					for (Rect other : obstacles) {
@@ -282,7 +337,7 @@ final class WaypointHud implements HudElement {
 		Map<Marker, Float> alphas = new IdentityHashMap<>();
 		Set<UUID> onScreen = new HashSet<>();
 		for (Marker marker : markers) {
-			UUID id = marker.waypoint().id;
+			UUID id = marker.source().id();
 			onScreen.add(id);
 			float previous = labelAlpha.getOrDefault(id, 0.0f);
 			float target = shown.containsKey(marker) ? 1.0f : 0.0f;
@@ -292,7 +347,7 @@ final class WaypointHud implements HudElement {
 				continue;
 			}
 			labelAlpha.put(id, alpha);
-			alphas.put(marker, alpha);
+			alphas.put(marker, alpha * marker.alpha()); // a tag fades with its pin during a group crossfade
 		}
 		labelAlpha.keySet().retainAll(onScreen);
 
@@ -313,6 +368,30 @@ final class WaypointHud implements HudElement {
 			if (label == null) label = label(font, focused, config.showDistance);
 			drawLabel(graphics, font, label, labelBackground, alphas.get(focused));
 		}
+	}
+
+	/**
+	 * Projects a pin anchored at world ({@code x}, {@code y}, {@code z}); null if it is behind the camera or far off
+	 * screen. During a crossfade ({@code alpha < 1}) the pin is also scaled down slightly toward
+	 * {@link #FADE_MIN_SCALE}.
+	 */
+	private @Nullable Marker project(PinSource source, double x, double y, double z, double distance,
+			float alpha, Vec3 cam, WaypyConfig config, float iconSize, int guiWidth, int guiHeight, int guiScale) {
+		clip.set((float) (x - cam.x), (float) (y - cam.y), (float) (z - cam.z), 1.0f);
+		viewProjection.transform(clip);
+		if (clip.w < MIN_CLIP_W) return null; // behind the camera
+		float ndcX = clip.x / clip.w;
+		float ndcY = clip.y / clip.w;
+		// Generous bounds so a pin partly on screen is still drawn.
+		if (ndcX < -1.5f || ndcX > 1.5f || ndcY < -1.5f || ndcY > 1.5f) return null;
+		// Only the anchor (the pin tip) is snapped to a framebuffer pixel; pin and tag are laid out from it with
+		// whole unscaled offsets, so they never jitter against each other while the scale changes.
+		float sx = snap((ndcX * 0.5f + 0.5f) * guiWidth, guiScale);
+		float sy = snap((0.5f - ndcY * 0.5f) * guiHeight, guiScale);
+		// Continuous scales (no quantisation), so pins shrink smoothly while walking away.
+		float scale = distanceScale(distance, config.shrinkWithDistance) * iconSize;
+		float pinScale = alpha >= 1.0f ? scale : scale * Mth.lerp(alpha, FADE_MIN_SCALE, 1.0f);
+		return new Marker(source, sx, sy, distance, pinScale, Math.max(MIN_LABEL_SCALE, scale), alpha);
 	}
 
 	/** Rounds a GUI coordinate to the nearest framebuffer pixel. */
@@ -342,10 +421,18 @@ final class WaypointHud implements HudElement {
 	}
 
 	private static Label label(Font font, Marker marker, boolean showDistance) {
-		Waypoint waypoint = marker.waypoint();
-		Component text = showDistance
-				? Component.translatable("waypy.render.label", waypoint.name, String.valueOf((int) Math.floor(marker.distance())))
-				: Component.literal(waypoint.name);
+		PinSource source = marker.source();
+		String distance = String.valueOf((int) Math.floor(marker.distance()));
+		Component text;
+		if (source.memberCount() > 0) { // a group: "Name (3) (124m)"
+			text = showDistance
+					? Component.translatable("waypy.render.group_label", source.name(), source.memberCount(), distance)
+					: Component.translatable("waypy.render.group_label.no_distance", source.name(), source.memberCount());
+		} else {
+			text = showDistance
+					? Component.translatable("waypy.render.label", source.name(), distance)
+					: Component.literal(source.name());
+		}
 		int width = font.width(text);
 		float s = marker.labelScale();
 		// The plate spans x-1 .. x+width (the font's trailing 1 px spacing is the right padding) and y-1 .. y+8;
@@ -358,10 +445,13 @@ final class WaypointHud implements HudElement {
 				x + width * s + LABEL_MARGIN, plateBottom + LABEL_MARGIN));
 	}
 
-	/** Draws the pin (badge, icon or initial, pointer), scaled about its tip. Pins are always opaque. */
+	/**
+	 * Draws the pin (badge, icon or initial, pointer), scaled about its tip. Opaque except during a group crossfade;
+	 * the item icon can't be drawn translucent, so it is shown only while the pin is at least half opaque.
+	 */
 	private void drawPin(GuiGraphicsExtractor graphics, Font font, Marker marker) {
-		Waypoint waypoint = marker.waypoint();
-		PinColors colors = PinColors.of(waypoint.color);
+		PinSource source = marker.source();
+		PinColors colors = PinColors.of(source.color()).withAlpha(marker.alpha());
 		float s = marker.logoScale();
 		graphics.pose().pushMatrix();
 		graphics.pose().translate(marker.x(), marker.y());
@@ -380,10 +470,10 @@ final class WaypointHud implements HudElement {
 			graphics.fill(-half, b + row, half, b + row + 1, colors.shade());
 		}
 
-		if (waypoint.logoType == LogoType.BLOCK) {
-			graphics.item(logoStack(waypoint.logoBlock), -8, t + 2);
+		if (source.logoType() == LogoType.BLOCK) {
+			if (marker.alpha() >= 0.5f) graphics.item(logoStack(source.logoBlock()), -8, t + 2);
 		} else {
-			drawInitial(graphics, font, waypoint.name, colors, t);
+			drawInitial(graphics, font, source.name(), colors, t);
 		}
 		graphics.pose().popMatrix();
 	}
@@ -393,7 +483,7 @@ final class WaypointHud implements HudElement {
 		String trimmed = name.strip();
 		int centreY = top + BADGE_SIZE / 2;
 		if (trimmed.isEmpty()) {
-			if (colors.textShadow()) graphics.fill(0, centreY, 2, centreY + 2, TEXT_SHADOW);
+			if (colors.textShadow()) graphics.fill(0, centreY, 2, centreY + 2, ARGB.color(ARGB.alpha(colors.fill()), TEXT_SHADOW));
 			graphics.fill(-1, centreY - 1, 1, centreY + 1, colors.text());
 			return;
 		}

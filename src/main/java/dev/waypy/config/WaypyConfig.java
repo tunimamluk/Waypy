@@ -48,6 +48,12 @@ public final class WaypyConfig {
 	/** Granularity of the percentage sliders. */
 	public static final int PERCENT_STEP = 5;
 
+	public static final int DEFAULT_COMBINE_DISTANCE = 15;
+	public static final int MIN_COMBINE_DISTANCE = 5;
+	public static final int MAX_COMBINE_DISTANCE = 200;
+	/** The slider positions of a group's combine distance, in blocks: 1-block steps up to 50, then 5-block steps up to 200. */
+	public static final List<Integer> COMBINE_DISTANCE_STEPS;
+
 	static {
 		List<Integer> steps = new ArrayList<>();
 		int value = MIN_RENDER_DISTANCE;
@@ -58,6 +64,10 @@ public final class WaypyConfig {
 		}
 		steps.add(UNLIMITED);
 		RENDER_DISTANCE_STEPS = List.copyOf(steps);
+
+		List<Integer> combine = new ArrayList<>();
+		for (int d = MIN_COMBINE_DISTANCE; d <= MAX_COMBINE_DISTANCE; d += d < 50 ? 1 : 5) combine.add(d);
+		COMBINE_DISTANCE_STEPS = List.copyOf(combine);
 	}
 
 	private static WaypyConfig instance = new WaypyConfig();
@@ -73,6 +83,8 @@ public final class WaypyConfig {
 	public LabelMode labels = LabelMode.ALWAYS;
 	/** Show the distance after the name in labels. */
 	public boolean showDistance = true;
+	/** The combine distance (blocks) new groups start with; each group then has its own. */
+	public int groupCombineDistance = DEFAULT_COMBINE_DISTANCE;
 
 	// ---------------------------------------------------------------- access
 
@@ -91,6 +103,7 @@ public final class WaypyConfig {
 		shrinkWithDistance = other.shrinkWithDistance;
 		labels = other.labels;
 		showDistance = other.showDistance;
+		groupCombineDistance = other.groupCombineDistance;
 		sanitize();
 	}
 
@@ -144,6 +157,16 @@ public final class WaypyConfig {
 		waypointRenderDistance = snapRenderDistance(waypointRenderDistance);
 		iconSize = snapPercent(iconSize, MIN_ICON_SIZE, MAX_ICON_SIZE);
 		if (labels == null) labels = LabelMode.ALWAYS;
+		groupCombineDistance = snapCombineDistance(groupCombineDistance);
+	}
+
+	/** The nearest combine-distance slider step (5..200 blocks). */
+	public static int snapCombineDistance(int blocks) {
+		int best = MIN_COMBINE_DISTANCE;
+		for (int step : COMBINE_DISTANCE_STEPS) {
+			if (Math.abs(step - blocks) < Math.abs(best - blocks)) best = step;
+		}
+		return best;
 	}
 
 	/** The nearest slider step; values above 4096 (and {@link #UNLIMITED} or any negative value) become Unlimited. */

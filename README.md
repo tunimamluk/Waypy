@@ -43,9 +43,19 @@ The menu lists the waypoints of the current world on the left and edits the sele
 - for Block Selection, an opacity slider and a "Render through blocks" option (off by default)
 - a Visible toggle
 
-**Delete** removes the selected waypoint right away; an **Undo** button appears next to it for 15 seconds. Undo brings back the last thing you removed, a whole waypoint or a single block taken off with `N`.
+**Delete** removes the selected waypoint right away (it is greyed out while a group or several waypoints are selected); an **Undo** button appears next to it for 15 seconds. Undo brings back the last thing you removed, a whole waypoint or a single block taken off with `N`.
 
 Clumps show their block count in the list and in the editor.
+
+### Groups
+
+A group bundles nearby waypoints (2 or more, in the same dimension) so that from far away they show as one pin instead of a crowd of pins.
+
+- **Select several waypoints** in the list: `Ctrl`+click adds or removes one, `Shift`+click selects a range, a plain click goes back to one. The editor then shows "N waypoints selected" and a **Make group** button (greyed out if the waypoints are in different dimensions).
+- The list shows each group as a row ("Mine Area · 3 waypoints") with its waypoints indented under it. Click the group row to edit the group: name, color, logo (a block, or None for the name's initial), Text, the **Combine distance** and **Ungroup** (the waypoints stay, just ungrouped).
+- A group member's editor shows "Group: <name>" and a **Remove from group** button. A waypoint is in at most one group; making a new group with it moves it out of its old one.
+- A group needs at least 2 waypoints: when removing or deleting leaves only one, the group goes away by itself. Undoing the deletion of a member puts it back into its group if the group still exists.
+- **In the world:** while you are farther than the combine distance (15 blocks by default) from the middle of the group, its waypoints are replaced by one pin in the group's color, with the label "Name (3) (124m)" when its Text is on; their highlights and beams are hidden too. Come closer and the waypoints show again. The pins crossfade, and there is a 1-block margin so standing right at the edge doesn't flicker. Hidden waypoints don't count; a group with fewer than 2 visible waypoints always shows its waypoints.
 
 Changes apply live and are saved when you close the menu.
 
@@ -60,12 +70,13 @@ Open them with the **Settings...** button at the top right of the menu. They app
 | Shrink with Distance | ON | Pins shrink with distance like real objects (perspective): full size up to 16 blocks, half size at 32, quarter at 64, never smaller than a fixed 35% so far waypoints stay visible. Name tags never get smaller than 50%. |
 | Labels | Always | Always, Looking At (only the waypoint nearest the crosshair) or Off. Applies to waypoints whose Text is on. Labels fade in and out. |
 | Distance in Label | ON | Show the distance after the name. |
+| Group Combine Distance | 15 blocks | The combine distance new groups start with (5–200 blocks). Each group has its own, changed in its editor. |
 
 Settings are saved in `<.minecraft>/config/waypy.json`.
 
 ## Where waypoints are saved
 
-Waypoints are stored per world in `<.minecraft>/waypy/<world>.json`.
+Waypoints and groups are stored per world in `<.minecraft>/waypy/<world>.json`.
 
 ## Building from source
 

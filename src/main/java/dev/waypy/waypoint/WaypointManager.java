@@ -47,6 +47,8 @@ import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.LevelResource;
 
+import dev.waypy.config.WaypyConfig;
+
 /**
  * Holds the waypoints of the current world and persists them as JSON at
  * {@code <gameDir>/waypy/<worldKey>.json}.
@@ -65,6 +67,12 @@ import net.minecraft.world.level.storage.LevelResource;
  * {@link #UNDO_WINDOW_MILLIS} (real time) in one small "recently undoable" stack of {@link UndoEntry}s, newest first
  * ({@link #undoAt}, {@link #undo}, {@link #restore}). Pending entries are never saved (the file is written without
  * them) and become permanent when they expire, on disconnect and on world change.
+ *
+ * <p><b>Groups:</b> {@link WaypointGroup}s of 2+ waypoints of one dimension ({@link #createGroup},
+ * {@link #removeFromGroup}, {@link #ungroup}). A waypoint is in at most one group. Deleting a member removes it from
+ * its group (a group left with fewer than {@link WaypointGroup#MIN_MEMBERS} is dissolved); undoing the deletion puts
+ * it back at its old place in the group if that group still exists, else it comes back ungrouped. Groups are saved in
+ * the same file (a top-level {@code groups} array).
  */
 public final class WaypointManager {
 	private static final Logger LOGGER = LoggerFactory.getLogger("waypy");
@@ -91,6 +99,9 @@ public final class WaypointManager {
 	}
 
 	private final List<Waypoint> waypoints = new ArrayList<>();
+	private final List<WaypointGroup> groups = new ArrayList<>();
+	/** Waypoint id -> its group; rebuilt by {@link #reindexGroups()} after every membership change. */
+	private final Map<UUID, WaypointGroup> groupByMember = new HashMap<>();
 	/** Per dimension: block -> the (first) waypoint containing it. Kept in sync on add, remove, load, block add/remove and undo. */
 	private final Map<ResourceKey<Level>, Map<BlockPos, Waypoint>> blockIndex = new HashMap<>();
 	/**
@@ -152,6 +163,41 @@ public final class WaypointManager {
 		return selectedId == null ? Optional.empty() : byId(selectedId);
 	}
 
+	// ---------------------------------------------------------------- groups: queries
+
+	/** Every group of the world, in creation order. */
+	public synchronized List<WaypointGroup> groups() {
+		return List.copyOf(groups);
+	}
+
+	/** The groups of {@code dimension}; a fresh list the caller may keep. Used by rendering. */
+	public synchronized List<WaypointGroup> groupsIn(ResourceKey<Level> dimension) {
+		List<WaypointGroup> out = new ArrayList<>();
+		for (WaypointGroup g : groups) {
+			if (g.dimension.equals(dimension)) out.add(g);
+		}
+		return out;
+	}
+
+	public synchronized Optional<WaypointGroup> groupById(UUID id) {
+		for (WaypointGroup g : groups) {
+			if (g.id.equals(id)) return Optional.of(g);
+		}
+		return Optional.empty();
+	}
+
+	/** The group the waypoint with this id belongs to, or null. */
+	public synchronized @Nullable WaypointGroup groupOf(UUID waypointId) {
+		return groupByMember.get(waypointId);
+	}
+
+	/** The group's member waypoints, in group order. */
+	public synchronized List<Waypoint> members(WaypointGroup group) {
+		List<Waypoint> out = new ArrayList<>(group.size());
+		for (UUID id : group.members()) byId(id).ifPresent(out::add);
+		return out;
+	}
+
 	/** The key of the loaded world (e.g. {@code sp_New_World}), or null when not in a world. */
 	public synchronized @Nullable String worldKey() {
 		return worldKey;
@@ -182,7 +228,10 @@ public final class WaypointManager {
 		boolean wasSelected = id.equals(selectedId);
 		if (wasSelected) selectedId = null;
 		reindex(w.dimension);
-		pushUndo(new DeletedWaypoint(w, listIndex, wasSelected, clock.getAsLong()));
+		// Leaves its group (which dissolves below 2 members); the undo puts it back if the group still exists.
+		WaypointGroup group = groupByMember.get(id);
+		int groupIndex = group != null ? leaveGroup(group, id) : -1;
+		pushUndo(new DeletedWaypoint(w, listIndex, wasSelected, group != null ? group.id : null, groupIndex, clock.getAsLong()));
 		markDirty();
 	}
 
@@ -232,8 +281,12 @@ public final class WaypointManager {
 		String name();
 	}
 
-	/** A deleted waypoint that can still be restored: the waypoint itself (id, fields and blocks unchanged). */
-	public record DeletedWaypoint(Waypoint waypoint, int listIndex, boolean wasSelected, long atMillis) implements UndoEntry {
+	/**
+	 * A deleted waypoint that can still be restored: the waypoint itself (id, fields and blocks unchanged), and the
+	 * group it was in ({@code groupId}, null if none) with its index there.
+	 */
+	public record DeletedWaypoint(Waypoint waypoint, int listIndex, boolean wasSelected, @Nullable UUID groupId, int groupIndex,
+			long atMillis) implements UndoEntry {
 		@Override
 		public ResourceKey<Level> dimension() {
 			return waypoint.dimension;
@@ -354,6 +407,12 @@ public final class WaypointManager {
 				Waypoint w = deleted.waypoint();
 				waypoints.add(Math.min(deleted.listIndex(), waypoints.size()), w);
 				index(w);
+				// Back into its group, at its old place, if that group still exists (else it stays ungrouped).
+				WaypointGroup group = deleted.groupId() == null ? null : groupById(deleted.groupId()).orElse(null);
+				if (group != null && group.dimension.equals(w.dimension) && !groupByMember.containsKey(w.id)) {
+					group.addMemberInternal(deleted.groupIndex(), w.id);
+					reindexGroups();
+				}
 				if (deleted.wasSelected() && selectedId == null) selectedId = w.id;
 				markDirty();
 				return w;
@@ -387,6 +446,95 @@ public final class WaypointManager {
 		}
 		long now = clock.getAsLong();
 		recentlyUndoable.removeIf(e -> now - e.atMillis() >= UNDO_WINDOW_MILLIS);
+	}
+
+	// ---------------------------------------------------------------- groups: mutations
+
+	/** Whether a list of waypoints can be made into a group ({@link #canGroup}). */
+	public enum GroupCheck {
+		OK,
+		/** Fewer than {@link WaypointGroup#MIN_MEMBERS} distinct managed waypoints. */
+		TOO_FEW,
+		/** The waypoints are not all in the same dimension. */
+		MIXED_DIMENSIONS
+	}
+
+	/** Checks {@code waypoints} for {@link #createGroup}: 2+ distinct managed waypoints, all in one dimension. */
+	public synchronized GroupCheck canGroup(List<Waypoint> waypoints) {
+		List<Waypoint> distinct = managedDistinct(waypoints);
+		if (distinct.size() < WaypointGroup.MIN_MEMBERS) return GroupCheck.TOO_FEW;
+		ResourceKey<Level> dimension = distinct.getFirst().dimension;
+		for (Waypoint w : distinct) {
+			if (!w.dimension.equals(dimension)) return GroupCheck.MIXED_DIMENSIONS;
+		}
+		return GroupCheck.OK;
+	}
+
+	/** The managed waypoints of {@code list}, without duplicates, in order. */
+	private List<Waypoint> managedDistinct(List<Waypoint> list) {
+		List<Waypoint> out = new ArrayList<>();
+		for (Waypoint w : list) {
+			if (w != null && waypoints.contains(w) && !out.contains(w)) out.add(w);
+		}
+		return out;
+	}
+
+	/**
+	 * Makes a new group of {@code waypoints} (the menu's "Make group"), in that order, if {@link #canGroup} allows it.
+	 * Waypoints already in a group leave it first (an old group left with fewer than 2 members is dissolved). The new
+	 * group is named {@code Group <n>} (next free number), takes the first member's colour and logo, has its text off
+	 * and the combine distance of the "Group Combine Distance" setting.
+	 *
+	 * @return the new group, or null if the waypoints can't be grouped
+	 */
+	public synchronized @Nullable WaypointGroup createGroup(List<Waypoint> waypoints) {
+		if (canGroup(waypoints) != GroupCheck.OK) return null;
+		List<Waypoint> members = managedDistinct(waypoints);
+		for (Waypoint w : members) {
+			WaypointGroup old = groupByMember.get(w.id);
+			if (old != null) leaveGroup(old, w.id);
+		}
+		Waypoint first = members.getFirst();
+		WaypointGroup group = new WaypointGroup(UUID.randomUUID(), nextFreeGroupName(), first.dimension, first.color,
+				first.logoBlock, WaypyConfig.get().groupCombineDistance);
+		group.logoType = first.logoType;
+		for (Waypoint w : members) group.addMemberInternal(group.size(), w.id);
+		groups.add(group);
+		reindexGroups();
+		markDirty();
+		return group;
+	}
+
+	/** Takes the waypoint out of its group (a group left with fewer than 2 members is dissolved). False if it had none. */
+	public synchronized boolean removeFromGroup(Waypoint waypoint) {
+		WaypointGroup group = groupByMember.get(waypoint.id);
+		if (group == null) return false;
+		leaveGroup(group, waypoint.id);
+		markDirty();
+		return true;
+	}
+
+	/** Dissolves the group; its members stay as normal (ungrouped) waypoints. */
+	public synchronized void ungroup(WaypointGroup group) {
+		if (groups.remove(group)) {
+			reindexGroups();
+			markDirty();
+		}
+	}
+
+	/** Removes a member from its group, dissolving the group below {@link WaypointGroup#MIN_MEMBERS}. Its former index. */
+	private int leaveGroup(WaypointGroup group, UUID waypointId) {
+		int index = group.removeMemberInternal(waypointId);
+		if (group.size() < WaypointGroup.MIN_MEMBERS) groups.remove(group);
+		reindexGroups();
+		return index;
+	}
+
+	private void reindexGroups() {
+		groupByMember.clear();
+		for (WaypointGroup g : groups) {
+			for (UUID id : g.members()) groupByMember.putIfAbsent(id, g);
+		}
 	}
 
 	// ---------------------------------------------------------------- move
@@ -526,6 +674,8 @@ public final class WaypointManager {
 	private void clear() {
 		recentlyUndoable.clear(); // pending deletions and block removals become permanent
 		waypoints.clear();
+		groups.clear();
+		groupByMember.clear();
 		blockIndex.clear();
 		selectedId = null;
 		colorCursor = 0;
@@ -557,6 +707,9 @@ public final class WaypointManager {
 		JsonArray arr = new JsonArray();
 		for (Waypoint w : waypoints) arr.add(toJson(w));
 		root.add("waypoints", arr);
+		JsonArray groupArr = new JsonArray();
+		for (WaypointGroup g : groups) groupArr.add(toJson(g));
+		root.add("groups", groupArr);
 
 		try {
 			Files.createDirectories(file.getParent());
@@ -611,6 +764,21 @@ public final class WaypointManager {
 				}
 			}
 		}
+		if (root.has("groups") && root.get("groups").isJsonArray()) {
+			for (JsonElement el : root.getAsJsonArray("groups")) {
+				try {
+					WaypointGroup g = groupFromJson(el.getAsJsonObject());
+					if (g != null) {
+						groups.add(g);
+						reindexGroups();
+					} else {
+						migrated = true; // dropped (too few valid members): rewrite the file
+					}
+				} catch (Exception e) {
+					LOGGER.warn("[Waypy] Skipping invalid group entry in {}: {}", file, el, e);
+				}
+			}
+		}
 		try {
 			if (root.has("selected")) {
 				UUID sel = UUID.fromString(root.get("selected").getAsString());
@@ -662,6 +830,60 @@ public final class WaypointManager {
 		o.addProperty("visible", w.visible);
 		o.addProperty("showText", w.showText);
 		return o;
+	}
+
+	private static JsonObject toJson(WaypointGroup g) {
+		JsonObject o = new JsonObject();
+		o.addProperty("id", g.id.toString());
+		o.addProperty("name", g.name);
+		o.addProperty("dimension", g.dimension.identifier().toString());
+		o.addProperty("color", String.format(Locale.ROOT, "#%06X", g.color & 0xFFFFFF));
+		o.addProperty("logoType", g.logoType.name());
+		o.addProperty("logoBlock", g.logoBlock.toString());
+		o.addProperty("showText", g.showText);
+		o.addProperty("combineDistance", g.combineDistance);
+		JsonArray members = new JsonArray();
+		for (UUID id : g.members()) members.add(id.toString());
+		o.add("members", members);
+		return o;
+	}
+
+	/**
+	 * A group from the file, keeping only members that are loaded waypoints of its dimension and not already in an
+	 * earlier group (duplicates dropped). Null if fewer than {@link WaypointGroup#MIN_MEMBERS} are left or the id is
+	 * already used.
+	 */
+	private @Nullable WaypointGroup groupFromJson(JsonObject o) {
+		UUID id = UUID.fromString(o.get("id").getAsString());
+		if (groupById(id).isPresent()) return null;
+		ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.parse(o.get("dimension").getAsString()));
+		Identifier logo = DEFAULT_LOGO;
+		if (o.has("logoBlock")) {
+			Identifier parsed = Identifier.tryParse(o.get("logoBlock").getAsString());
+			if (parsed != null) logo = parsed;
+		}
+		int combine = o.has("combineDistance") ? o.get("combineDistance").getAsInt() : WaypyConfig.DEFAULT_COMBINE_DISTANCE;
+		WaypointGroup g = new WaypointGroup(id, o.has("name") ? o.get("name").getAsString() : "Group", dim,
+				parseColor(o.get("color")), logo, WaypyConfig.snapCombineDistance(combine));
+		g.logoType = parseEnum(LogoType.class, o, "logoType", LogoType.BLOCK);
+		if (o.has("showText")) g.showText = o.get("showText").getAsBoolean();
+		JsonElement members = o.get("members");
+		if (members != null && members.isJsonArray()) {
+			for (JsonElement m : members.getAsJsonArray()) {
+				try {
+					UUID wid = UUID.fromString(m.getAsString());
+					Waypoint w = byId(wid).orElse(null);
+					if (w != null && w.dimension.equals(dim) && !groupByMember.containsKey(wid)) g.addMemberInternal(g.size(), wid);
+				} catch (RuntimeException e) {
+					// not a UUID string: skip it
+				}
+			}
+		}
+		if (g.size() < WaypointGroup.MIN_MEMBERS) {
+			LOGGER.warn("[Waypy] Dropping group {} with fewer than {} valid members", g.name, WaypointGroup.MIN_MEMBERS);
+			return null;
+		}
+		return g;
 	}
 
 	private static Waypoint fromJson(JsonObject o) {
@@ -790,6 +1012,14 @@ public final class WaypointManager {
 	}
 
 	// ---------------------------------------------------------------- helpers
+
+	private String nextFreeGroupName() {
+		Set<String> names = new HashSet<>();
+		for (WaypointGroup g : groups) names.add(g.name);
+		int n = 1;
+		while (names.contains("Group " + n)) n++;
+		return "Group " + n;
+	}
 
 	private String nextFreeName() {
 		Set<String> names = new HashSet<>();

@@ -30,6 +30,7 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 	private final OptionInstance<Boolean> shrink;
 	private final OptionInstance<LabelMode> labels;
 	private final OptionInstance<Boolean> showDistance;
+	private final OptionInstance<Integer> groupCombineDistance;
 
 	public WaypySettingsScreen(@Nullable Screen lastScreen) {
 		this(lastScreen, Minecraft.getInstance().options);
@@ -69,6 +70,13 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 				OptionInstance.cachedConstantTooltip(Component.translatable("waypy.settings.show_distance.tooltip")),
 				config.showDistance,
 				value -> config.showDistance = value);
+
+		groupCombineDistance = new OptionInstance<>("waypy.settings.group_combine_distance",
+				OptionInstance.cachedConstantTooltip(Component.translatable("waypy.settings.group_combine_distance.tooltip")),
+				(caption, value) -> Options.genericValueLabel(caption, Component.translatable("waypy.settings.render_distance.blocks", value)),
+				new OptionInstance.SliderableEnum<>(WaypyConfig.COMBINE_DISTANCE_STEPS, Codec.INT),
+				config.groupCombineDistance,
+				value -> config.groupCombineDistance = value);
 	}
 
 	/** A 5%-step percentage slider over {@code [min, max]}. */
@@ -90,6 +98,7 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 		list.addBig(renderDistance);
 		list.addSmall(iconSize, shrink);
 		list.addSmall(labels, showDistance);
+		list.addBig(groupCombineDistance);
 	}
 
 	@Override

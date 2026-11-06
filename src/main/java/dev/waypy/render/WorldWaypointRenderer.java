@@ -2,6 +2,7 @@ package dev.waypy.render;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.WeakHashMap;
 
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -92,7 +93,12 @@ final class WorldWaypointRenderer {
 		double cutoff = WaypyConfig.get().maxWorldRenderDistance();
 		double cutoffSq = cutoff * cutoff;
 
+		// Members of a combined group (far away: drawn as one group pin) have no beam or highlight. This switches
+		// instantly at the threshold (with the combiner's hysteresis); only the HUD pins crossfade.
+		Set<Waypoint> combined = GroupCombiner.combinedMembers(GroupCombiner.compute(level.dimension(), camera.pos));
+
 		for (Waypoint waypoint : waypoints) {
+			if (combined.contains(waypoint)) continue;
 			if (distanceSqTo(waypoint, camera.pos) > cutoffSq) continue;
 			if (waypoint.isBeacon()) { // single block only: a clump is always a highlight
 				submitBeam(waypoint, level, camera, poseStack, collector, animationTime, scoping);

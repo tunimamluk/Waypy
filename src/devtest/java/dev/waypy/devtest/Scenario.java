@@ -30,6 +30,7 @@ import dev.waypy.gui.WaypointScreen;
 import dev.waypy.gui.WaypySettingsScreen;
 import dev.waypy.waypoint.LogoType;
 import dev.waypy.waypoint.Waypoint;
+import dev.waypy.waypoint.WaypointGroup;
 import dev.waypy.waypoint.WaypointManager;
 import dev.waypy.waypoint.WaypointStyle;
 
@@ -62,6 +63,9 @@ import dev.waypy.waypoint.WaypointStyle;
  *       the press, so growing to two blocks must force it back to BLOCK_HIGHLIGHT (a clump can't be a beacon).</li>
  * </ul>
  * "Walk Test" (east of the spawn, text on) is used alone for the walking-away (shrink smoothness) screenshots.
+ * Group "Mine Area" (east of the spawn, out of the main view), made with {@link WaypointManager#createGroup} (the menu's
+ * "Make group"): "Mine Entrance" (iron block), "Ore Vein" (a 3-block coal-ore clump) and "Mine Storage" (a barrel,
+ * BEACON), all with text on. Seen near (members) and from beyond its 15-block combine distance (one group pin).
  */
 final class Scenario {
 	private static final int SURFACE_Y = -61; // top grass block of the default superflat
@@ -89,6 +93,12 @@ final class Scenario {
 	private Waypoint floorPatch;
 	private Waypoint stairStack;
 	private Waypoint walkTest;
+	private Waypoint mineEntrance;
+	private Waypoint oreVein;
+	private Waypoint mineStorage;
+	private WaypointGroup mineArea;
+	/** A waypoint in the Nether, to check that a group can't span dimensions. */
+	private Waypoint netherProbe;
 	/** The waypoint deleted for the real-time undo expiry check, and when. */
 	private Waypoint expiryProbe;
 	private List<BlockPos> expiryProbeBlocks;
@@ -124,6 +134,8 @@ final class Scenario {
 		step("new waypoint defaults", () -> true, this::checkDefaults, 2);
 		step("undo via N, forced expiry", () -> true, this::checkUndo, 2);
 		step("N extend-or-remove, block undo", () -> true, this::checkExtendOrRemove, 2);
+		step("groups: create, dimensions, dissolve, undo", () -> true, this::checkGroups, 2);
+		step("create group Mine Area", () -> true, this::createMineArea, 2);
 		step("start real-time undo expiry probe", () -> true, this::startExpiryProbe, 2);
 		step("wait for chunks", chunksReady(), () -> {
 		}, 60);
@@ -166,6 +178,7 @@ final class Scenario {
 		step("back to ground position (after clumps)", () -> true, () -> command("tp @a 0.5 " + FEET_Y + " 0.5 0 8"), 20);
 
 		walkingAwayShots();
+		groupWorldShots();
 
 		menuShot("10_menu_beacon_block", () -> beaconBlock);
 		menuShot("11_menu_beacon_lapis", () -> beaconLapis);
@@ -174,6 +187,7 @@ final class Scenario {
 		menuShot("14_menu_no_selection", () -> null);
 		menuShot("15_menu_clump", () -> floorPatch);
 		menuMoveAndUndo();
+		menuGroups();
 
 		step("open BlockPickerScreen", () -> true, this::openBlockPicker, 30);
 		step("screenshot block picker", this::noPendingScreenshots, () -> {
@@ -248,7 +262,12 @@ final class Scenario {
 				"fill 2 " + FEET_Y + " -9 2 " + FEET_Y + " -6 oak_planks",
 				"fill 3 " + FEET_Y + " -9 3 " + (FEET_Y + 1) + " -8 oak_planks",
 				"fill 4 " + FEET_Y + " -9 4 " + (FEET_Y + 2) + " -8 oak_planks",
-				"fill -1 " + FEET_Y + " -1 -1 " + (FEET_Y + 2) + " -1 stone")) {
+				"fill -1 " + FEET_Y + " -1 -1 " + (FEET_Y + 2) + " -1 stone",
+				// Group "Mine Area" props, east of the spawn: an iron block, a coal-ore vein and a barrel.
+				"fill 36 " + FEET_Y + " 10 50 " + (FEET_Y + 8) + " 30 air",
+				"setblock 40 " + FEET_Y + " 20 iron_block",
+				"fill 44 " + FEET_Y + " 22 46 " + FEET_Y + " 22 coal_ore",
+				"setblock 42 " + FEET_Y + " 25 barrel")) {
 			command(cmd);
 		}
 	}
@@ -662,6 +681,251 @@ final class Scenario {
 				+ " text=" + w.showText;
 	}
 
+	/** Member names, in order (for messages). */
+	private static List<String> names(List<Waypoint> waypoints) {
+		return waypoints.stream().map(w -> w.name).toList();
+	}
+
+	/**
+	 * Group rules through the manager (the menu's methods) and the N key: defaults, one group per waypoint, no mixed
+	 * dimensions, auto-dissolve below 2 members, membership restored by undo (or not, once the group is gone).
+	 */
+	private void checkGroups() {
+		WaypointManager wm = WaypointManager.get();
+		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
+		var dim = mc.level.dimension();
+		wm.expireDeletions(true);
+		BlockPos pa = new BlockPos(50, SURFACE_Y, -40), pb = new BlockPos(52, SURFACE_Y, -40);
+		BlockPos pc = new BlockPos(54, SURFACE_Y, -40), pd = new BlockPos(56, SURFACE_Y, -40);
+		Waypoint a = wm.create(pa, dim, null), b = wm.create(pb, dim, null), c = wm.create(pc, dim, null), d = wm.create(pd, dim, null);
+		a.color = 0xABCDEF;
+		a.logoType = LogoType.NONE;
+
+		// Create: name, first member's colour/logo, text off, the setting's combine distance, member order.
+		WaypointGroup g = wm.createGroup(List.of(a, b, c));
+		check(g != null && wm.groups().contains(g), "createGroup returned no group");
+		check(g.name.startsWith("Group ") && g.color == 0xABCDEF && g.logoType == LogoType.NONE && g.logoBlock.equals(a.logoBlock)
+				&& !g.showText && g.combineDistance == WaypyConfig.get().groupCombineDistance && g.dimension.equals(dim),
+				"new group defaults wrong: " + g.name + " " + Integer.toHexString(g.color) + " " + g.logoType + " " + g.combineDistance);
+		check(wm.members(g).equals(List.of(a, b, c)) && wm.groupOf(b.id) == g && wm.groupOf(d.id) == null, "members wrong: " + names(wm.members(g)));
+
+		// Mixed dimensions: refused, nothing changes. Fewer than 2: refused.
+		Waypoint nether = wm.create(new BlockPos(0, 64, 0), net.minecraft.world.level.Level.NETHER, null);
+		check(wm.canGroup(List.of(d, nether)) == WaypointManager.GroupCheck.MIXED_DIMENSIONS && wm.createGroup(List.of(d, nether)) == null,
+				"a group across dimensions was allowed");
+		check(wm.createGroup(List.of(d)) == null && wm.createGroup(List.of(d, d)) == null, "a group of one was allowed");
+		check(wm.groupOf(d.id) == null && wm.groupOf(nether.id) == null, "a refused group changed membership");
+		wm.remove(nether.id);
+
+		// Deleting a member with an N tap: it leaves the group; undo with N puts it back at its old place.
+		keys.press(mc, pb, false);
+		keys.release(mc);
+		check(wm.byId(b.id).isEmpty() && wm.members(g).equals(List.of(a, c)) && wm.groupById(g.id).isPresent(),
+				"N tap on a member: group is " + names(wm.members(g)));
+		check(keys.press(mc, pb, false) == b && keys.hold() == CreateKeyHandler.Hold.RESTORED, "N did not restore the member");
+		keys.release(mc);
+		check(wm.members(g).equals(List.of(a, b, c)) && wm.groupOf(b.id) == g, "undo did not restore the membership: " + names(wm.members(g)));
+		DevtestClient.log("ASSERT ok: group \"" + g.name + "\" " + names(wm.members(g)) + "; N tap on a member removed it from the group, "
+				+ "N undo put it back at index 1");
+
+		// Down to one member: the group dissolves; undo brings the waypoints back ungrouped.
+		wm.remove(a.id); // the menu's Delete path
+		check(wm.members(g).equals(List.of(b, c)), "group after deleting a: " + names(wm.members(g)));
+		wm.remove(c.id);
+		check(wm.groupById(g.id).isEmpty() && !wm.groups().contains(g) && wm.groupOf(b.id) == null, "group with 1 member not dissolved");
+		check(wm.undo(wm.lastUndo().orElseThrow()) == c && wm.undo(wm.lastUndo().orElseThrow()) == a, "undo of the deletions failed");
+		check(wm.groupOf(a.id) == null && wm.groupOf(c.id) == null && wm.groupById(g.id).isEmpty(), "undo after dissolve restored a group");
+		DevtestClient.log("ASSERT ok: deleting down to 1 member dissolved the group; undo brought the waypoints back ungrouped");
+
+		// Remove from group: below 2 it dissolves. Regrouping moves waypoints out of their old group.
+		WaypointGroup two = wm.createGroup(List.of(a, b));
+		check(wm.removeFromGroup(a) && wm.groupById(two.id).isEmpty() && wm.groupOf(b.id) == null, "removeFromGroup did not dissolve a 2-group");
+		WaypointGroup g1 = wm.createGroup(List.of(a, b, c));
+		WaypointGroup g2 = wm.createGroup(List.of(c, d));
+		check(wm.members(g1).equals(List.of(a, b)) && wm.members(g2).equals(List.of(c, d)), "regroup did not move c");
+		WaypointGroup g3 = wm.createGroup(List.of(b, d));
+		check(wm.groupById(g1.id).isEmpty() && wm.groupById(g2.id).isEmpty() && wm.members(g3).equals(List.of(b, d))
+				&& wm.groupOf(a.id) == null && wm.groupOf(c.id) == null, "regroup did not dissolve the old groups");
+		wm.ungroup(g3);
+		check(wm.groupById(g3.id).isEmpty() && wm.byId(b.id).isPresent() && wm.byId(d.id).isPresent(), "ungroup removed waypoints");
+		DevtestClient.log("ASSERT ok: removeFromGroup/regroup dissolve groups below 2; ungroup keeps the waypoints");
+
+		for (Waypoint w : List.of(a, b, c, d)) wm.remove(w.id);
+		wm.expireDeletions(true);
+		check(wm.groups().isEmpty(), "groups left after cleanup: " + wm.groups());
+		wm.select(beaconBlock.id);
+	}
+
+	/** "Mine Area": three waypoints made into a group with the manager method the menu's "Make group" uses. */
+	private void createMineArea() {
+		WaypointManager wm = WaypointManager.get();
+		var dim = mc.level.dimension();
+		mineEntrance = wm.create(new BlockPos(40, FEET_Y, 20), dim, Identifier.withDefaultNamespace("iron_block"));
+		mineEntrance.setName("Mine Entrance");
+		mineEntrance.color = 0xF9801D; // orange
+		mineEntrance.showText = true;
+		oreVein = wm.create(new BlockPos(44, FEET_Y, 22), dim, Identifier.withDefaultNamespace("coal_ore"));
+		check(wm.addBlock(oreVein, new BlockPos(45, FEET_Y, 22)) == WaypointManager.AddBlockResult.ADDED
+				&& wm.addBlock(oreVein, new BlockPos(46, FEET_Y, 22)) == WaypointManager.AddBlockResult.ADDED, "Ore Vein clump");
+		oreVein.setName("Ore Vein");
+		oreVein.color = 0x474F52; // gray
+		oreVein.showText = true;
+		mineStorage = wm.create(new BlockPos(42, FEET_Y, 25), dim, Identifier.withDefaultNamespace("barrel"));
+		mineStorage.setName("Mine Storage");
+		mineStorage.color = 0xB02E26; // red
+		mineStorage.style = WaypointStyle.BEACON;
+		mineStorage.showText = true;
+
+		mineArea = wm.createGroup(List.of(mineEntrance, oreVein, mineStorage));
+		check(mineArea != null, "Mine Area not created");
+		check(mineArea.color == mineEntrance.color && mineArea.logoBlock.equals(mineEntrance.logoBlock),
+				"group did not take the first member's colour/logo");
+		mineArea.setName("Mine Area");
+		mineArea.color = 0xFED83D; // yellow
+		mineArea.logoBlock = Identifier.withDefaultNamespace("iron_pickaxe");
+		mineArea.showText = true;
+		check(mineArea.combineDistance == 15, "default combine distance " + mineArea.combineDistance);
+		wm.select(beaconBlock.id);
+		wm.markDirty();
+		DevtestClient.log("group Mine Area: " + names(wm.members(mineArea)) + ", combine distance " + mineArea.combineDistance);
+	}
+
+	/** The group combiner's state for a group (render package, by reflection). */
+	private static boolean combined(WaypointGroup group) {
+		try {
+			Class<?> cls = Class.forName("dev.waypy.render.GroupCombiner");
+			java.lang.reflect.Method m = cls.getDeclaredMethod("isCombined", java.util.UUID.class);
+			m.setAccessible(true);
+			return (boolean) m.invoke(null, group.id);
+		} catch (ReflectiveOperationException e) {
+			throw new IllegalStateException("could not read the group combiner", e);
+		}
+	}
+
+	/**
+	 * Mine Area alone on screen: near (camera ~13 blocks from the group centre: the members' pins, highlights and
+	 * beam) and far (~35 blocks, beyond the 15-block combine distance: one group pin, no member highlights or beam).
+	 */
+	private void groupWorldShots() {
+		List<Waypoint> hidden = new ArrayList<>();
+		step("groups: show only Mine Area", this::noPendingScreenshots, () -> {
+			for (Waypoint w : WaypointManager.get().all()) {
+				if (w.visible && WaypointManager.get().groupOf(w.id) != mineArea) {
+					w.visible = false;
+					hidden.add(w);
+				}
+			}
+			command("tp @a 42.8 " + (FEET_Y + 2) + " 10.5 0 5");
+		}, 40);
+		step("wait for chunks (group near)", chunksReady(), () -> {
+		}, 20);
+		screenshot("47_group_near");
+		step("check near state", this::noPendingScreenshots, () -> {
+			check(!combined(mineArea), "Mine Area combined at ~13 blocks");
+			command("tp @a 42.8 " + (FEET_Y + 5) + " -11.5 0 12");
+		}, 40);
+		step("wait for chunks (group far)", chunksReady(), () -> {
+		}, 20);
+		screenshot("48_group_far");
+		step("check far state, restore", this::noPendingScreenshots, () -> {
+			check(combined(mineArea), "Mine Area not combined at ~35 blocks");
+			DevtestClient.log("ASSERT ok: Mine Area separate near (47_group_near), combined far (48_group_far)");
+			for (Waypoint w : hidden) w.visible = true;
+			command("tp @a 0.5 " + FEET_Y + " 0.5 0 8");
+		}, 20);
+	}
+
+	/**
+	 * The menu with groups: Shift range, a cross-dimension selection (Make group inactive), a Ctrl multi-selection
+	 * (screenshot), Make group, Remove from group and Ungroup through the screen, the group editor and a member's
+	 * editor (screenshots), Delete inactive for a group, and the group editor in a narrow window.
+	 */
+	private void menuGroups() {
+		WaypointScreen[] screen = new WaypointScreen[1];
+		step("menu: shift range, cross-dimension selection", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			netherProbe = wm.create(new BlockPos(5, 70, 5), net.minecraft.world.level.Level.NETHER, null);
+			netherProbe.setName("Nether Probe");
+			screen[0] = new WaypointScreen(beaconBlock);
+			mc.gui.setScreen(screen[0]);
+			WaypointScreen sc = screen[0];
+			sc.clickWaypoint(beaconBlock, false, false);
+			sc.clickWaypoint(highlightSolid, true, false); // range Diamond Beacon .. Gold Block (list order)
+			check(sc.multiSelection().equals(List.of(beaconBlock, beaconLapis, highlightThrough, highlightSolid)),
+					"shift range gave " + names(sc.multiSelection()));
+			check(sc.makeGroupButton() != null && sc.makeGroupButton().active, "Make group not offered for a range");
+			check(sc.deleteButton() != null && !sc.deleteButton().active, "Delete active for a multi-selection");
+			sc.clickWaypoint(netherProbe, false, true);
+			check(sc.multiSelection().size() == 5 && sc.makeGroupButton() != null && !sc.makeGroupButton().active,
+					"Make group active across dimensions");
+			sc.clickWaypoint(netherProbe, false, true); // Ctrl again: toggled off
+			check(sc.multiSelection().size() == 4 && sc.makeGroupButton().active, "Ctrl toggle off failed");
+			sc.clickWaypoint(beaconLapis, false, false); // plain click: single selection again
+			check(sc.multiSelection().isEmpty() && sc.selectedWaypoint() == beaconLapis, "plain click did not clear the multi-selection");
+			wm.remove(netherProbe.id);
+			wm.expireDeletions(true);
+			// The screenshot selection: Ctrl+click three waypoints.
+			mc.gui.setScreen(screen[0] = new WaypointScreen(beaconBlock));
+			screen[0].clickWaypoint(beaconBlock, false, false);
+			screen[0].clickWaypoint(highlightThrough, false, true);
+			screen[0].clickWaypoint(highlightSolid, false, true);
+			check(screen[0].multiSelection().size() == 3 && screen[0].selectedWaypoint() == highlightSolid, "ctrl selection wrong");
+			DevtestClient.log("ASSERT ok: menu Shift range, Ctrl toggle, cross-dimension Make group inactive, plain click clears");
+		}, 10);
+		screenshot("50_menu_multi_select");
+		step("menu: Make group, Remove from group, Ungroup", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			WaypointScreen sc = screen[0];
+			WaypointGroup made = sc.makeGroup();
+			check(made != null && sc.selectedGroup() == made && made.name.equals("Group 1")
+					&& wm.members(made).equals(List.of(beaconBlock, highlightThrough, highlightSolid)),
+					"Make group gave " + made + (made != null ? " " + names(wm.members(made)) : ""));
+			check(sc.deleteButton() != null && !sc.deleteButton().active, "Delete active with a group selected");
+			sc.clickWaypoint(highlightThrough, false, false);
+			check(sc.removeFromGroupButton() != null, "no Remove from group for a member");
+			sc.removeSelectedFromGroup();
+			check(wm.groupOf(highlightThrough.id) == null && wm.members(made).equals(List.of(beaconBlock, highlightSolid))
+					&& sc.selectedWaypoint() == highlightThrough, "Remove from group failed");
+			sc.clickGroup(made);
+			sc.ungroupSelected();
+			check(wm.groupById(made.id).isEmpty() && wm.byId(beaconBlock.id).isPresent() && wm.groupOf(highlightSolid.id) == null
+					&& sc.selectedWaypoint() == beaconBlock, "Ungroup failed");
+			sc.clickGroup(mineArea);
+			check(sc.selectedGroup() == mineArea, "group row not selected");
+			DevtestClient.log("ASSERT ok: menu Make group -> \"" + made.name + "\" selected; Remove from group; Ungroup kept the waypoints");
+		}, 10);
+		screenshot("51_menu_group_editor");
+		step("menu: member editor", this::noPendingScreenshots, () -> {
+			screen[0].clickWaypoint(oreVein, false, false);
+			check(screen[0].removeFromGroupButton() != null && screen[0].deleteButton().active, "member editor wrong");
+		}, 10);
+		screenshot("52_menu_group_member");
+		step("menu: narrow window (GUI scale 4)", this::noPendingScreenshots, () -> {
+			mc.options.guiScale().set(4);
+			mc.resizeGui();
+			screen[0].clickGroup(mineArea);
+		}, 10);
+		screenshot("53_menu_group_editor_narrow");
+		step("menu: GUI scale back, close", this::noPendingScreenshots, () -> {
+			mc.options.guiScale().set(2);
+			mc.resizeGui();
+			mc.gui.setScreen(null);
+		}, 5);
+	}
+
+	/** Every group (name, fields, members) of the world, for exact before/after comparisons. */
+	private static String describeGroups() {
+		WaypointManager wm = WaypointManager.get();
+		StringBuilder out = new StringBuilder();
+		for (WaypointGroup g : wm.groups()) {
+			out.append(g.id).append(" \"").append(g.name).append("\" ").append(g.dimension.identifier()).append(" color=")
+					.append(Integer.toHexString(g.color)).append(' ').append(g.logoType).append(' ').append(g.logoBlock)
+					.append(" text=").append(g.showText).append(" combine=").append(g.combineDistance).append(" members=")
+					.append(g.members()).append('\n');
+		}
+		return out.toString();
+	}
+
 	/**
 	 * Deletes a waypoint and removes a block of another with N now; {@link #checkExpiryProbe} checks neither can be
 	 * undone once 15 s have passed.
@@ -727,6 +991,15 @@ final class Scenario {
 	private void checkLoadMigrations() {
 		WaypointManager wm = WaypointManager.get();
 		var dim = mc.level.dimension();
+		// Groups round-trip: save, reload, the same groups (ids, fields, member order).
+		mineArea.combineDistance = 37;
+		String groupsBefore = describeGroups();
+		check(!groupsBefore.isEmpty(), "no groups before the reload");
+		wm.onDisconnect();
+		wm.onJoin(mc);
+		check(describeGroups().equals(groupsBefore), "groups changed by save/reload:\n" + describeGroups() + "vs\n" + groupsBefore);
+		DevtestClient.log("ASSERT ok: groups round-trip through the file:\n" + groupsBefore.strip());
+
 		Waypoint doomed = wm.create(new BlockPos(28, SURFACE_Y, -28), dim, null);
 		var doomedId = doomed.id;
 		wm.remove(doomedId);
@@ -744,6 +1017,8 @@ final class Scenario {
 				if (id.equals(stairStack.id.toString())) o.addProperty("style", "BEACON"); // an old clump beacon
 				if (id.equals(highlightThrough.id.toString())) o.remove("showText"); // written before showText existed
 			}
+			check(root.has("groups") && root.getAsJsonArray("groups").size() == 1, "groups not saved: " + root.get("groups"));
+			root.remove("groups"); // a file from before groups existed
 			java.nio.file.Files.writeString(file, new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(root));
 		} catch (java.io.IOException e) {
 			throw new IllegalStateException("could not edit the waypoint file", e);
@@ -754,7 +1029,10 @@ final class Scenario {
 		check(stairs.style == WaypointStyle.BLOCK_HIGHLIGHT && stairs.size() == 14, "clump BEACON not migrated: " + stairs.style);
 		check(wm.byId(highlightThrough.id).orElseThrow().showText, "missing showText did not load as true");
 		check(!wm.byId(farBeacon.id).orElseThrow().showText && wm.byId(beaconBlock.id).orElseThrow().showText, "showText not round-tripped");
-		DevtestClient.log("load: clump BEACON -> BLOCK_HIGHLIGHT, missing showText -> true, pending deletion dropped at disconnect");
+		check(wm.groups().isEmpty() && wm.groupOf(mineEntrance.id) == null && wm.byId(oreVein.id).isPresent(),
+				"a file without groups did not load ungrouped");
+		DevtestClient.log("load: clump BEACON -> BLOCK_HIGHLIGHT, missing showText -> true, pending deletion dropped at disconnect, "
+				+ "no groups array -> no groups");
 	}
 
 	/** Name, fields and blocks of a waypoint, for exact comparisons. */

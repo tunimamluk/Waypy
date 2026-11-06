@@ -4,9 +4,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.function.IntConsumer;
+import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import org.jspecify.annotations.Nullable;
+import org.lwjgl.glfw.GLFW;
 
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -17,6 +22,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Checkbox;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.MultiLineTextWidget;
 import net.minecraft.client.gui.components.ObjectSelectionList;
 import net.minecraft.client.gui.components.ScrollableLayout;
 import net.minecraft.client.gui.components.StringWidget;
@@ -29,6 +35,7 @@ import net.minecraft.client.gui.layouts.SpacerElement;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.InputWithModifiers;
+import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.core.BlockPos;
@@ -43,21 +50,31 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
 import dev.waypy.WaypyClient;
+import dev.waypy.config.WaypyConfig;
 import dev.waypy.waypoint.LogoType;
 import dev.waypy.waypoint.Waypoint;
+import dev.waypy.waypoint.WaypointGroup;
 import dev.waypy.waypoint.WaypointManager;
 import dev.waypy.waypoint.WaypointStyle;
 
 /**
- * The Waypy menu: a waypoint list on the left (with "+ New here" / "Delete" below it) and an editor for the
- * selected waypoint on the right. Built only from vanilla widgets and sprites. Changes are applied live to the
- * {@link Waypoint} and the manager is marked dirty; everything is saved when the screen is removed.
+ * The Waypy menu: a list on the left (groups with their members indented under them, then the ungrouped waypoints;
+ * "+ New here" / "Delete" below it) and an editor on the right. Built only from vanilla widgets and sprites. Changes
+ * are applied live to the {@link Waypoint} or {@link WaypointGroup} and the manager is marked dirty; everything is
+ * saved when the screen is removed.
+ *
+ * <p>Selection, as in a file browser: a plain click selects one row (a waypoint, or a group: the group editor);
+ * Ctrl+click toggles a waypoint row and Shift+click selects the range of waypoint rows from the last plain or Ctrl
+ * click. With 2+ waypoints selected the editor offers "Make group".
  */
 public class WaypointScreen extends Screen {
 	private static final Component NEW_HERE = Component.translatable("waypy.gui.new_here");
 	private static final Component DELETE = Component.translatable("waypy.gui.delete");
+	private static final Component DELETE_GROUP_TOOLTIP = Component.translatable("waypy.gui.delete.group_tooltip");
+	private static final Component DELETE_MULTI_TOOLTIP = Component.translatable("waypy.gui.delete.multi_tooltip");
 	private static final Component UNDO = Component.translatable("waypy.gui.undo");
 	private static final Component NAME_LABEL = Component.translatable("waypy.gui.name");
 	private static final Component POSITION_LABEL = Component.translatable("waypy.gui.position");
@@ -74,10 +91,24 @@ public class WaypointScreen extends Screen {
 	private static final Component VISIBLE_LABEL = Component.translatable("waypy.gui.visible");
 	private static final Component SHOW_TEXT_LABEL = Component.translatable("waypy.gui.show_text");
 	private static final Component SHOW_TEXT_TOOLTIP = Component.translatable("waypy.gui.show_text.tooltip");
+	private static final Component SHOW_TEXT_GROUP_TOOLTIP = Component.translatable("waypy.gui.show_text.group_tooltip");
 	private static final Component SETTINGS = Component.translatable("waypy.gui.settings");
+	private static final Component MAKE_GROUP = Component.translatable("waypy.gui.make_group");
+	private static final Component MAKE_GROUP_TOOLTIP = Component.translatable("waypy.gui.make_group.tooltip");
+	private static final Component MAKE_GROUP_MIXED = Component.translatable("waypy.gui.make_group.mixed");
+	private static final Component SELECTED_HINT = Component.translatable("waypy.gui.selected_hint");
+	private static final Component COMBINE_TOOLTIP = Component.translatable("waypy.gui.combine_distance.tooltip");
+	private static final Component UNGROUP = Component.translatable("waypy.gui.ungroup");
+	private static final Component UNGROUP_TOOLTIP = Component.translatable("waypy.gui.ungroup.tooltip");
+	private static final Component REMOVE_FROM_GROUP = Component.translatable("waypy.gui.remove_from_group");
+	private static final Component REMOVE_FROM_GROUP_TOOLTIP = Component.translatable("waypy.gui.remove_from_group.tooltip");
 
 	/** Height of one list row: 2px padding + two text lines / a 16px swatch + 2px padding. */
 	private static final int ENTRY_HEIGHT = 24;
+	/** Indent of a group's member rows under the group row. */
+	private static final int MEMBER_INDENT = 10;
+	/** Outline of the rows of a multi-selection other than the primary (which gets vanilla's selection outline). */
+	private static final int MULTI_OUTLINE = 0xFFA0A0A0;
 	/** Space under the list for the "+ New here" / "Delete" row: 5 + 20 + 3. */
 	private static final int LIST_BUTTON_ROW = 28;
 	private static final int SIDE_MARGIN = 10;
@@ -104,7 +135,14 @@ public class WaypointScreen extends Screen {
 
 	private HeaderAndFooterLayout layout = new HeaderAndFooterLayout(this);
 	private final WaypointManager manager = WaypointManager.get();
+
+	// Selection. Exactly one mode at a time: a group (selectedGroup), a multi-selection (multi has 2+ waypoints;
+	// selected is the primary, the row clicked last), a single waypoint (selected), or nothing.
 	private @Nullable Waypoint selected;
+	private @Nullable WaypointGroup selectedGroup;
+	private final List<Waypoint> multi = new ArrayList<>();
+	/** Where a Shift+click range starts: the waypoint of the last plain or Ctrl click. */
+	private @Nullable Waypoint rangeAnchor;
 
 	// geometry, computed in init()
 	private int listX;
@@ -123,7 +161,7 @@ public class WaypointScreen extends Screen {
 	private @Nullable ScrollableLayout editorScroll;
 	private LinearLayout editorContent = LinearLayout.vertical();
 
-	// editor widgets of the selected waypoint (rebuilt on selection change and on init)
+	// editor widgets (rebuilt on selection change and on init); which are set depends on the mode
 	private @Nullable EditBox nameBox;
 	private final List<EditBox> coordBoxes = new ArrayList<>();
 	/** Set while a coordinate box's text is rewritten by code (Y clamping), so its responder ignores it. */
@@ -137,6 +175,10 @@ public class WaypointScreen extends Screen {
 	private @Nullable Checkbox throughBlocksBox;
 	private @Nullable CycleButton<Boolean> visibleButton;
 	private @Nullable CycleButton<Boolean> showTextButton;
+	private @Nullable Button removeFromGroupButton;
+	private @Nullable CombineDistanceSlider combineSlider;
+	private @Nullable Button ungroupButton;
+	private @Nullable Button makeGroupButton;
 
 	public WaypointScreen(@Nullable Waypoint selected) {
 		super(Component.translatable("waypy.screen.title"));
@@ -169,19 +211,42 @@ public class WaypointScreen extends Screen {
 				ScrollableLayout.ReserveStrategy.RIGHT);
 		editorScroll.visitWidgets(this::addRenderableWidget);
 
-		// Resolve the selection: the given/remembered waypoint if it still exists, else the manager's, else the first.
-		List<Waypoint> all = manager.all();
-		Waypoint initial = selected != null && all.contains(selected) ? selected : manager.selected().orElse(null);
-		if (initial == null && !all.isEmpty()) initial = all.getFirst();
-		selected = initial;
-		if (initial != null) manager.select(initial.id);
-		list.populate(all, initial);
+		resolveSelection();
+		list.populate();
 
 		buildEditor();
 
 		// Footer last so it comes last in tab order.
 		layout.visitWidgets(this::addRenderableWidget);
 		addSettingsButton();
+	}
+
+	/**
+	 * Drops selected things that no longer exist and settles on one mode: the group if it still exists, else a
+	 * multi-selection of 2+, else a single waypoint (the given/remembered one if it still exists, else the manager's,
+	 * else the first).
+	 */
+	private void resolveSelection() {
+		List<Waypoint> all = manager.all();
+		if (selectedGroup != null && manager.groupById(selectedGroup.id).orElse(null) != selectedGroup) selectedGroup = null;
+		multi.removeIf(w -> !all.contains(w));
+		if (rangeAnchor != null && !all.contains(rangeAnchor)) rangeAnchor = null;
+		if (selectedGroup != null) {
+			selected = null;
+			multi.clear();
+			return;
+		}
+		if (multi.size() >= 2) {
+			if (selected == null || !multi.contains(selected)) selected = multi.getLast();
+			manager.select(selected.id);
+			return;
+		}
+		if (multi.size() == 1) selected = multi.getFirst();
+		multi.clear();
+		Waypoint initial = selected != null && all.contains(selected) ? selected : manager.selected().orElse(null);
+		if (initial == null && !all.isEmpty()) initial = all.getFirst();
+		selected = initial;
+		if (initial != null) manager.select(initial.id);
 	}
 
 	/**
@@ -218,6 +283,15 @@ public class WaypointScreen extends Screen {
 				: (restorable ? "waypy.gui.undo.tooltip" : "waypy.gui.undo.blocked");
 		undoButton.setTooltip(offer == null ? null : Tooltip.create(Component.translatable(key, offer.name())));
 		layoutListButtons();
+	}
+
+	/** Delete works on a single waypoint only: inactive (with the reason) for a group or a multi-selection. */
+	private void updateDeleteButton() {
+		if (deleteButton == null) return;
+		boolean single = selectedGroup == null && multi.size() < 2 && selected != null;
+		deleteButton.active = single;
+		deleteButton.setTooltip(selectedGroup != null ? Tooltip.create(DELETE_GROUP_TOOLTIP)
+				: multi.size() >= 2 ? Tooltip.create(DELETE_MULTI_TOOLTIP) : null);
 	}
 
 	@Override
@@ -268,9 +342,81 @@ public class WaypointScreen extends Screen {
 		if (list != null) setInitialFocus(list);
 	}
 
+	// ------------------------------------------------------------------ selection
+
+	/**
+	 * A click on a waypoint row (public for the devtest, which clicks rows this way): plain = select just it;
+	 * {@code ctrl} = toggle it in the multi-selection (the last selected row can't be toggled off); {@code shift} =
+	 * select the range of waypoint rows from the last plain/Ctrl-clicked one to it.
+	 */
+	public void clickWaypoint(Waypoint waypoint, boolean shift, boolean ctrl) {
+		if (ctrl) {
+			if (selectedGroup != null) {
+				selectedGroup = null;
+				multi.clear();
+			}
+			if (multi.isEmpty() && selected != null) multi.add(selected);
+			if (multi.contains(waypoint)) {
+				if (multi.size() > 1) multi.remove(waypoint);
+				if (selected == waypoint) selected = multi.getLast();
+			} else {
+				multi.add(waypoint);
+				selected = waypoint;
+			}
+			rangeAnchor = waypoint;
+		} else if (shift && (rangeAnchor != null || selected != null)) {
+			List<Waypoint> order = list != null ? list.waypointOrder() : manager.all();
+			Waypoint anchor = rangeAnchor != null && order.contains(rangeAnchor) ? rangeAnchor : selected;
+			int from = order.indexOf(anchor);
+			int to = order.indexOf(waypoint);
+			if (from < 0 || to < 0) {
+				selectOnly(waypoint);
+			} else {
+				selectedGroup = null;
+				multi.clear();
+				multi.addAll(order.subList(Math.min(from, to), Math.max(from, to) + 1));
+				selected = waypoint;
+			}
+		} else {
+			selectOnly(waypoint);
+		}
+		if (multi.size() < 2) {
+			if (multi.size() == 1) selected = multi.getFirst();
+			multi.clear();
+		}
+		selectionChanged();
+	}
+
+	/** A click on a group row: selects the group (the group editor). Public for the devtest. */
+	public void clickGroup(WaypointGroup group) {
+		selectedGroup = group;
+		selected = null;
+		multi.clear();
+		rangeAnchor = null;
+		selectionChanged();
+	}
+
+	private void selectOnly(Waypoint waypoint) {
+		selectedGroup = null;
+		multi.clear();
+		selected = waypoint;
+		rangeAnchor = waypoint;
+	}
+
+	/** After a selection change: remember it in the manager, highlight the rows and rebuild the editor. */
+	private void selectionChanged() {
+		if (selected != null) manager.select(selected.id);
+		if (list != null) list.highlightPrimary();
+		buildEditor();
+	}
+
+	private boolean isMultiSelected(Waypoint waypoint) {
+		return multi.size() >= 2 && multi.contains(waypoint);
+	}
+
 	// ------------------------------------------------------------------ editor
 
-	/** (Re)creates the editor widgets for {@link #selected} and lays them out. */
+	/** (Re)creates the editor widgets for the current selection mode and lays them out. */
 	private void buildEditor() {
 		if (editorScroll != null) {
 			editorScroll.visitChildren(e -> {
@@ -287,101 +433,154 @@ public class WaypointScreen extends Screen {
 		throughBlocksBox = null;
 		visibleButton = null;
 		showTextButton = null;
-		if (deleteButton != null) deleteButton.active = selected != null;
+		removeFromGroupButton = null;
+		combineSlider = null;
+		ungroupButton = null;
+		makeGroupButton = null;
+		updateDeleteButton();
 
-		Waypoint w = selected;
-		if (w != null) {
-			int full = editorWidth;
-			int half = twoColumns ? (editorWidth - COLUMN_GAP) / 2 : editorWidth;
-
-			nameBox = new EditBox(font, full, Button.DEFAULT_HEIGHT, NAME_LABEL);
-			nameBox.setMaxLength(Waypoint.MAX_NAME_LENGTH);
-			nameBox.setValue(w.name);
-			nameBox.setResponder(value -> {
-				w.setName(value);
-				manager.markDirty();
-			});
-
-			int coordWidth = coordinatesInline() ? inlineCoordinateWidth() : full - font.width("X") - COORD_LABEL_GAP;
-			for (Direction.Axis axis : Direction.Axis.values()) {
-				coordBoxes.add(coordinateBox(w, axis, coordWidth));
-			}
-
-			for (DyeColor dye : DyeColor.values()) {
-				swatches.add(new ColorSwatch(dye, w));
-			}
-
-			hexBox = new EditBox(font, hexInline() ? full - SWATCH_GRID_WIDTH - 8 : full, Button.DEFAULT_HEIGHT, HEX_LABEL);
-			hexBox.setMaxLength(7);
-			hexBox.setHint(Component.literal("#RRGGBB").withStyle(ChatFormatting.DARK_GRAY));
-			hexBox.setValue(formatHex(w.color));
-			EditBox hex = hexBox;
-			hexBox.setResponder(value -> {
-				Integer color = parseHex(value);
-				if (color == null) {
-					hex.setTextColor(INVALID_TEXT_COLOR);
-					return;
-				}
-				hex.setTextColor(EditBox.DEFAULT_TEXT_COLOR);
-				if (w.color != color) {
-					w.color = color;
-					manager.markDirty();
-				}
-			});
-
-			styleButton = CycleButton.<WaypointStyle>builder(WaypointScreen::styleName, w.style)
-					.withValues(WaypointStyle.values())
-					.create(0, 0, half, Button.DEFAULT_HEIGHT, STYLE_LABEL, (button, value) -> {
-						w.style = value;
-						manager.markDirty();
-						layoutEditor();
-					});
-			if (w.isClump()) {
-				// A clump is always Block Selection (the manager enforces it); the style can't be changed.
-				styleButton.active = false;
-				styleButton.setTooltip(Tooltip.create(STYLE_CLUMP_TOOLTIP));
-			}
-
-			logoTypeButton = CycleButton.<LogoType>builder(WaypointScreen::logoTypeName, w.logoType)
-					.withValues(LogoType.values())
-					.create(0, 0, half, Button.DEFAULT_HEIGHT, LOGO_LABEL, (button, value) -> {
-						w.logoType = value;
-						manager.markDirty();
-						layoutEditor();
-					});
-
-			logoBlockButton = new BlockIconButton(half, w.logoBlock, b -> minecraft.gui.setScreen(
-					new BlockPickerScreen(this, w.logoBlock, id -> {
-						w.logoBlock = id;
-						manager.markDirty();
-					})));
-			logoBlockButton.setTooltip(Tooltip.create(LOGO_BLOCK_TOOLTIP));
-
-			opacitySlider = new OpacitySlider(half, w);
-
-			throughBlocksBox = Checkbox.builder(THROUGH_BLOCKS_LABEL, font)
-					.maxWidth(half)
-					.selected(w.throughBlocks)
-					.onValueChange((box, value) -> {
-						w.throughBlocks = value;
-						manager.markDirty();
-					})
-					.build();
-
-			visibleButton = CycleButton.onOffBuilder(w.visible)
-					.create(0, 0, half, Button.DEFAULT_HEIGHT, VISIBLE_LABEL, (button, value) -> {
-						w.visible = value;
-						manager.markDirty();
-					});
-
-			showTextButton = CycleButton.onOffBuilder(w.showText)
-					.create(0, 0, half, Button.DEFAULT_HEIGHT, SHOW_TEXT_LABEL, (button, value) -> {
-						w.showText = value;
-						manager.markDirty();
-					});
-			showTextButton.setTooltip(Tooltip.create(SHOW_TEXT_TOOLTIP));
+		int half = twoColumns ? (editorWidth - COLUMN_GAP) / 2 : editorWidth;
+		if (selectedGroup != null) {
+			buildGroupWidgets(selectedGroup, half);
+		} else if (multi.size() >= 2) {
+			buildMultiWidgets();
+		} else if (selected != null) {
+			buildWaypointWidgets(selected, half);
 		}
 		layoutEditor();
+	}
+
+	private void buildWaypointWidgets(Waypoint w, int half) {
+		int full = editorWidth;
+		nameBox = nameBox(w.name, w::setName);
+
+		int coordWidth = coordinatesInline() ? inlineCoordinateWidth() : full - font.width("X") - COORD_LABEL_GAP;
+		for (Direction.Axis axis : Direction.Axis.values()) {
+			coordBoxes.add(coordinateBox(w, axis, coordWidth));
+		}
+
+		colorWidgets(() -> w.color, color -> w.color = color);
+
+		styleButton = CycleButton.<WaypointStyle>builder(WaypointScreen::styleName, w.style)
+				.withValues(WaypointStyle.values())
+				.create(0, 0, half, Button.DEFAULT_HEIGHT, STYLE_LABEL, (button, value) -> {
+					w.style = value;
+					manager.markDirty();
+					layoutEditor();
+				});
+		if (w.isClump()) {
+			// A clump is always Block Selection (the manager enforces it); the style can't be changed.
+			styleButton.active = false;
+			styleButton.setTooltip(Tooltip.create(STYLE_CLUMP_TOOLTIP));
+		}
+
+		logoWidgets(half, () -> w.logoType, type -> w.logoType = type, () -> w.logoBlock, id -> w.logoBlock = id);
+
+		opacitySlider = new OpacitySlider(half, w);
+
+		throughBlocksBox = Checkbox.builder(THROUGH_BLOCKS_LABEL, font)
+				.maxWidth(half)
+				.selected(w.throughBlocks)
+				.onValueChange((box, value) -> {
+					w.throughBlocks = value;
+					manager.markDirty();
+				})
+				.build();
+
+		visibleButton = CycleButton.onOffBuilder(w.visible)
+				.create(0, 0, half, Button.DEFAULT_HEIGHT, VISIBLE_LABEL, (button, value) -> {
+					w.visible = value;
+					manager.markDirty();
+				});
+
+		showTextButton = showTextButton(half, w.showText, value -> w.showText = value, SHOW_TEXT_TOOLTIP);
+
+		if (manager.groupOf(w.id) != null) {
+			removeFromGroupButton = Button.builder(REMOVE_FROM_GROUP, b -> removeSelectedFromGroup())
+					.size(half, Button.DEFAULT_HEIGHT).tooltip(Tooltip.create(REMOVE_FROM_GROUP_TOOLTIP)).build();
+		}
+	}
+
+	private void buildGroupWidgets(WaypointGroup g, int half) {
+		nameBox = nameBox(g.name, g::setName);
+		colorWidgets(() -> g.color, color -> g.color = color);
+		logoWidgets(half, () -> g.logoType, type -> g.logoType = type, () -> g.logoBlock, id -> g.logoBlock = id);
+		showTextButton = showTextButton(half, g.showText, value -> g.showText = value, SHOW_TEXT_GROUP_TOOLTIP);
+		combineSlider = new CombineDistanceSlider(half, g);
+		combineSlider.setTooltip(Tooltip.create(COMBINE_TOOLTIP));
+		ungroupButton = Button.builder(UNGROUP, b -> ungroupSelected())
+				.size(half, Button.DEFAULT_HEIGHT).tooltip(Tooltip.create(UNGROUP_TOOLTIP)).build();
+	}
+
+	private void buildMultiWidgets() {
+		int width = twoColumns ? (editorWidth - COLUMN_GAP) / 2 : editorWidth;
+		makeGroupButton = Button.builder(MAKE_GROUP, b -> makeGroup()).size(width, Button.DEFAULT_HEIGHT).build();
+		boolean ok = manager.canGroup(List.copyOf(multi)) == WaypointManager.GroupCheck.OK;
+		makeGroupButton.active = ok;
+		makeGroupButton.setTooltip(Tooltip.create(ok ? MAKE_GROUP_TOOLTIP : MAKE_GROUP_MIXED));
+	}
+
+	private EditBox nameBox(String value, Consumer<String> setter) {
+		EditBox box = new EditBox(font, editorWidth, Button.DEFAULT_HEIGHT, NAME_LABEL);
+		box.setMaxLength(Waypoint.MAX_NAME_LENGTH);
+		box.setValue(value);
+		box.setResponder(text -> {
+			setter.accept(text);
+			manager.markDirty();
+		});
+		return box;
+	}
+
+	/** The 16 dye swatches and the hex box, editing a colour through {@code get}/{@code set}. */
+	private void colorWidgets(IntSupplier get, IntConsumer set) {
+		for (DyeColor dye : DyeColor.values()) {
+			swatches.add(new ColorSwatch(dye, get, set));
+		}
+		EditBox hex = new EditBox(font, hexInline() ? editorWidth - SWATCH_GRID_WIDTH - 8 : editorWidth, Button.DEFAULT_HEIGHT, HEX_LABEL);
+		hex.setMaxLength(7);
+		hex.setHint(Component.literal("#RRGGBB").withStyle(ChatFormatting.DARK_GRAY));
+		hex.setValue(formatHex(get.getAsInt()));
+		hex.setResponder(value -> {
+			Integer color = parseHex(value);
+			if (color == null) {
+				hex.setTextColor(INVALID_TEXT_COLOR);
+				return;
+			}
+			hex.setTextColor(EditBox.DEFAULT_TEXT_COLOR);
+			if (get.getAsInt() != color) {
+				set.accept(color);
+				manager.markDirty();
+			}
+		});
+		hexBox = hex;
+	}
+
+	/** The Logo (Block / None) cycle button and the block button that opens the picker. */
+	private void logoWidgets(int half, Supplier<LogoType> type, Consumer<LogoType> setType, Supplier<Identifier> block,
+			Consumer<Identifier> setBlock) {
+		logoTypeButton = CycleButton.<LogoType>builder(WaypointScreen::logoTypeName, type.get())
+				.withValues(LogoType.values())
+				.create(0, 0, half, Button.DEFAULT_HEIGHT, LOGO_LABEL, (button, value) -> {
+					setType.accept(value);
+					manager.markDirty();
+					layoutEditor();
+				});
+		logoBlockButton = new BlockIconButton(half, block.get(), b -> minecraft.gui.setScreen(
+				new BlockPickerScreen(this, block.get(), id -> {
+					setBlock.accept(id);
+					manager.markDirty();
+				})));
+		logoBlockButton.setTooltip(Tooltip.create(LOGO_BLOCK_TOOLTIP));
+	}
+
+	private CycleButton<Boolean> showTextButton(int half, boolean value, Consumer<Boolean> setter, Component tooltip) {
+		CycleButton<Boolean> button = CycleButton.onOffBuilder(value)
+				.create(0, 0, half, Button.DEFAULT_HEIGHT, SHOW_TEXT_LABEL, (b, v) -> {
+					setter.accept(v);
+					manager.markDirty();
+				});
+		button.setTooltip(Tooltip.create(tooltip));
+		return button;
 	}
 
 	/** Width of each coordinate box when X, Y and Z share one row. */
@@ -472,90 +671,18 @@ public class WaypointScreen extends Screen {
 		return editorWidth - SWATCH_GRID_WIDTH - 8 >= 60;
 	}
 
-	/** Puts the existing editor widgets into the scrollable layout according to the current style/logo type. */
+	/** Puts the existing editor widgets into the scrollable layout according to the mode and current style/logo type. */
 	private void layoutEditor() {
 		ScrollableLayout scroll = editorScroll;
 		if (scroll == null) return;
 		scroll.removeChildren();
 
-		Waypoint w = selected;
-		if (w != null && nameBox != null && hexBox != null && styleButton != null && logoTypeButton != null
-				&& logoBlockButton != null && opacitySlider != null && throughBlocksBox != null
-				&& visibleButton != null && showTextButton != null && coordBoxes.size() == 3) {
-			editorContent.addChild(label(NAME_LABEL));
-			editorContent.addChild(nameBox);
-
-			// Position (the anchor) under the name: "X [ ] Y [ ] Z [ ]" on one row, or one row each when narrow.
-			editorContent.addChild(label(w.isClump() ? POSITION_CLUMP_LABEL : POSITION_LABEL), s -> s.paddingTop(2));
-			boolean inline = coordinatesInline();
-			LinearLayout coordRow = LinearLayout.horizontal().spacing(COORD_GROUP_GAP);
-			Direction.Axis[] axes = Direction.Axis.values();
-			for (int i = 0; i < axes.length; i++) {
-				LinearLayout group = LinearLayout.horizontal().spacing(COORD_LABEL_GAP);
-				group.addChild(new StringWidget(Component.literal(axes[i].getName().toUpperCase(Locale.ROOT)), font),
-						s -> s.alignVerticallyMiddle());
-				group.addChild(coordBoxes.get(i));
-				if (inline) coordRow.addChild(group);
-				else editorContent.addChild(group);
-			}
-			if (inline) editorContent.addChild(coordRow);
-
-			editorContent.addChild(label(COLOR_LABEL), s -> s.paddingTop(2));
-			GridLayout swatchGrid = new GridLayout().spacing(SWATCH_GAP);
-			for (int i = 0; i < swatches.size(); i++) {
-				swatchGrid.addChild(swatches.get(i), i / SWATCH_COLUMNS, i % SWATCH_COLUMNS);
-			}
-			if (hexInline()) {
-				LinearLayout colorRow = LinearLayout.horizontal().spacing(8);
-				colorRow.addChild(swatchGrid, s -> s.alignVerticallyMiddle());
-				colorRow.addChild(hexBox, s -> s.alignVerticallyMiddle());
-				editorContent.addChild(colorRow);
-			} else {
-				editorContent.addChild(swatchGrid);
-				editorContent.addChild(hexBox);
-			}
-
-			boolean highlight = w.style == WaypointStyle.BLOCK_HIGHLIGHT;
-			Button logoDetail = w.logoType == LogoType.BLOCK ? logoBlockButton : null;
-			if (twoColumns) {
-				LinearLayout row1 = LinearLayout.horizontal().spacing(COLUMN_GAP);
-				row1.addChild(styleButton);
-				row1.addChild(logoTypeButton);
-				editorContent.addChild(row1, s -> s.paddingTop(4));
-
-				if (logoDetail != null) {
-					// The block button sits under "Logo", in the right column.
-					LinearLayout logoRow = LinearLayout.horizontal().spacing(COLUMN_GAP);
-					logoRow.addChild(SpacerElement.width(styleButton.getWidth()));
-					logoRow.addChild(logoDetail);
-					editorContent.addChild(logoRow);
-				}
-
-				LinearLayout row2 = LinearLayout.horizontal().spacing(COLUMN_GAP);
-				row2.addChild(visibleButton);
-				row2.addChild(showTextButton);
-				editorContent.addChild(row2);
-
-				if (highlight) {
-					LinearLayout row3 = LinearLayout.horizontal().spacing(COLUMN_GAP);
-					row3.addChild(opacitySlider);
-					row3.addChild(throughBlocksBox, s -> s.alignVerticallyMiddle());
-					editorContent.addChild(row3);
-				}
-			} else {
-				editorContent.addChild(styleButton, s -> s.paddingTop(4));
-				editorContent.addChild(logoTypeButton);
-				if (logoDetail != null) editorContent.addChild(logoDetail);
-				if (highlight) {
-					editorContent.addChild(opacitySlider);
-					editorContent.addChild(throughBlocksBox);
-				}
-				editorContent.addChild(visibleButton);
-				editorContent.addChild(showTextButton);
-			}
-			if (w.isClump()) {
-				editorContent.addChild(label(Component.translatable("waypy.gui.clump_info", w.size())), s -> s.paddingTop(2));
-			}
+		if (selectedGroup != null) {
+			layoutGroupEditor(selectedGroup);
+		} else if (multi.size() >= 2) {
+			layoutMultiEditor();
+		} else if (selected != null) {
+			layoutWaypointEditor(selected);
 		}
 
 		int top = layout.getHeaderHeight() + 4;
@@ -567,36 +694,177 @@ public class WaypointScreen extends Screen {
 		scroll.setY(top);
 	}
 
+	private void layoutWaypointEditor(Waypoint w) {
+		if (nameBox == null || hexBox == null || styleButton == null || logoTypeButton == null || logoBlockButton == null
+				|| opacitySlider == null || throughBlocksBox == null || visibleButton == null || showTextButton == null
+				|| coordBoxes.size() != 3) {
+			return;
+		}
+		editorContent.addChild(label(NAME_LABEL));
+		editorContent.addChild(nameBox);
+
+		// Position (the anchor) under the name: "X [ ] Y [ ] Z [ ]" on one row, or one row each when narrow.
+		editorContent.addChild(label(w.isClump() ? POSITION_CLUMP_LABEL : POSITION_LABEL), s -> s.paddingTop(2));
+		boolean inline = coordinatesInline();
+		LinearLayout coordRow = LinearLayout.horizontal().spacing(COORD_GROUP_GAP);
+		Direction.Axis[] axes = Direction.Axis.values();
+		for (int i = 0; i < axes.length; i++) {
+			LinearLayout group = LinearLayout.horizontal().spacing(COORD_LABEL_GAP);
+			group.addChild(new StringWidget(Component.literal(axes[i].getName().toUpperCase(Locale.ROOT)), font),
+					s -> s.alignVerticallyMiddle());
+			group.addChild(coordBoxes.get(i));
+			if (inline) coordRow.addChild(group);
+			else editorContent.addChild(group);
+		}
+		if (inline) editorContent.addChild(coordRow);
+
+		addColorRows();
+
+		boolean highlight = w.style == WaypointStyle.BLOCK_HIGHLIGHT;
+		Button logoDetail = w.logoType == LogoType.BLOCK ? logoBlockButton : null;
+		if (twoColumns) {
+			LinearLayout row1 = LinearLayout.horizontal().spacing(COLUMN_GAP);
+			row1.addChild(styleButton);
+			row1.addChild(logoTypeButton);
+			editorContent.addChild(row1, s -> s.paddingTop(4));
+
+			if (logoDetail != null) {
+				// The block button sits under "Logo", in the right column.
+				LinearLayout logoRow = LinearLayout.horizontal().spacing(COLUMN_GAP);
+				logoRow.addChild(SpacerElement.width(styleButton.getWidth()));
+				logoRow.addChild(logoDetail);
+				editorContent.addChild(logoRow);
+			}
+
+			LinearLayout row2 = LinearLayout.horizontal().spacing(COLUMN_GAP);
+			row2.addChild(visibleButton);
+			row2.addChild(showTextButton);
+			editorContent.addChild(row2);
+
+			if (highlight) {
+				LinearLayout row3 = LinearLayout.horizontal().spacing(COLUMN_GAP);
+				row3.addChild(opacitySlider);
+				row3.addChild(throughBlocksBox, s -> s.alignVerticallyMiddle());
+				editorContent.addChild(row3);
+			}
+		} else {
+			editorContent.addChild(styleButton, s -> s.paddingTop(4));
+			editorContent.addChild(logoTypeButton);
+			if (logoDetail != null) editorContent.addChild(logoDetail);
+			if (highlight) {
+				editorContent.addChild(opacitySlider);
+				editorContent.addChild(throughBlocksBox);
+			}
+			editorContent.addChild(visibleButton);
+			editorContent.addChild(showTextButton);
+		}
+
+		// A group member: "Group: <name>" and "Remove from group", side by side when there is room.
+		WaypointGroup group = manager.groupOf(w.id);
+		if (group != null && removeFromGroupButton != null) {
+			Component groupText = Component.translatable("waypy.gui.member_of", group.name).withStyle(ChatFormatting.GRAY);
+			if (twoColumns) {
+				// The line fills the left column (clipped if too long, centred on the button's height).
+				LinearLayout row = LinearLayout.horizontal().spacing(COLUMN_GAP);
+				row.addChild(new StringWidget(removeFromGroupButton.getWidth(), Button.DEFAULT_HEIGHT, groupText, font));
+				row.addChild(removeFromGroupButton);
+				editorContent.addChild(row, s -> s.paddingTop(2));
+			} else {
+				editorContent.addChild(new StringWidget(groupText, font).setMaxWidth(editorWidth), s -> s.paddingTop(2));
+				editorContent.addChild(removeFromGroupButton);
+			}
+		}
+		if (w.isClump()) {
+			editorContent.addChild(label(Component.translatable("waypy.gui.clump_info", w.size())), s -> s.paddingTop(2));
+		}
+	}
+
+	private void layoutGroupEditor(WaypointGroup g) {
+		if (nameBox == null || hexBox == null || logoTypeButton == null || logoBlockButton == null || showTextButton == null
+				|| combineSlider == null || ungroupButton == null) {
+			return;
+		}
+		editorContent.addChild(new StringWidget(Component.translatable("waypy.gui.group_members", g.size()), font));
+		editorContent.addChild(label(NAME_LABEL), s -> s.paddingTop(2));
+		editorContent.addChild(nameBox);
+		addColorRows();
+
+		Button logoDetail = g.logoType == LogoType.BLOCK ? logoBlockButton : null;
+		if (twoColumns) {
+			LinearLayout row1 = LinearLayout.horizontal().spacing(COLUMN_GAP);
+			row1.addChild(logoTypeButton);
+			row1.addChild(showTextButton);
+			editorContent.addChild(row1, s -> s.paddingTop(4));
+			if (logoDetail != null) editorContent.addChild(logoDetail); // under "Logo", in the left column
+			LinearLayout row2 = LinearLayout.horizontal().spacing(COLUMN_GAP);
+			row2.addChild(combineSlider);
+			row2.addChild(ungroupButton);
+			editorContent.addChild(row2);
+		} else {
+			editorContent.addChild(logoTypeButton, s -> s.paddingTop(4));
+			if (logoDetail != null) editorContent.addChild(logoDetail);
+			editorContent.addChild(showTextButton);
+			editorContent.addChild(combineSlider);
+			editorContent.addChild(ungroupButton);
+		}
+	}
+
+	private void layoutMultiEditor() {
+		if (makeGroupButton == null) return;
+		editorContent.addChild(new StringWidget(Component.translatable("waypy.gui.selected_count", multi.size()), font));
+		editorContent.addChild(new MultiLineTextWidget(SELECTED_HINT.copy().withStyle(ChatFormatting.GRAY), font)
+				.setMaxWidth(editorWidth));
+		editorContent.addChild(makeGroupButton, s -> s.paddingTop(4));
+	}
+
+	/** "Color" label, then the swatch grid with the hex box beside it (or under it when narrow). */
+	private void addColorRows() {
+		if (hexBox == null) return;
+		editorContent.addChild(label(COLOR_LABEL), s -> s.paddingTop(2));
+		GridLayout swatchGrid = new GridLayout().spacing(SWATCH_GAP);
+		for (int i = 0; i < swatches.size(); i++) {
+			swatchGrid.addChild(swatches.get(i), i / SWATCH_COLUMNS, i % SWATCH_COLUMNS);
+		}
+		if (hexInline()) {
+			LinearLayout colorRow = LinearLayout.horizontal().spacing(8);
+			colorRow.addChild(swatchGrid, s -> s.alignVerticallyMiddle());
+			colorRow.addChild(hexBox, s -> s.alignVerticallyMiddle());
+			editorContent.addChild(colorRow);
+		} else {
+			editorContent.addChild(swatchGrid);
+			editorContent.addChild(hexBox);
+		}
+	}
+
 	private StringWidget label(Component text) {
 		return new StringWidget(text.copy().withStyle(ChatFormatting.GRAY), font);
 	}
 
 	// ------------------------------------------------------------------ actions
 
-	private void onListSelect(Waypoint waypoint) {
-		if (waypoint == selected) return;
-		selected = waypoint;
-		manager.select(waypoint.id);
-		buildEditor();
-	}
-
 	private void createHere() {
 		Waypoint created = WaypyClient.createWaypoint(minecraft, false);
 		if (created != null) {
-			selected = created;
+			selectOnly(created);
 			rebuildWidgets();
 		}
 	}
 
-	/** Deletes the selected waypoint at once (no confirmation: Undo restores it for 15 s) and selects a neighbour. */
+	/**
+	 * Deletes the selected waypoint at once (no confirmation: Undo restores it for 15 s) and selects its neighbour in
+	 * the list. Only for a single selected waypoint (Delete is inactive for a group or a multi-selection).
+	 */
 	public void deleteSelected() {
 		Waypoint w = selected;
-		if (w == null) return;
-		List<Waypoint> all = manager.all();
-		int index = all.indexOf(w);
+		if (w == null || selectedGroup != null || multi.size() >= 2) return;
+		List<Waypoint> order = list != null ? list.waypointOrder() : manager.all();
+		int index = order.indexOf(w);
 		manager.remove(w.id);
-		List<Waypoint> rest = manager.all();
+		List<Waypoint> rest = new ArrayList<>(order);
+		rest.remove(w);
+		rest.removeIf(x -> manager.byId(x.id).isEmpty());
 		selected = rest.isEmpty() ? null : rest.get(Math.min(Math.max(index, 0), rest.size() - 1));
+		rangeAnchor = selected;
 		manager.select(selected != null ? selected.id : null);
 		rebuildWidgets();
 	}
@@ -613,19 +881,88 @@ public class WaypointScreen extends Screen {
 			updateUndoButton(true);
 			return;
 		}
-		selected = restored;
+		selectOnly(restored);
 		manager.select(restored.id);
 		rebuildWidgets();
 	}
 
-	/** The waypoint being edited, if any. */
+	/**
+	 * "Make group" for the multi-selection (in list order, so the topmost waypoint is the first member, whose colour
+	 * and logo the group takes). The new group is selected. Public for the devtest.
+	 *
+	 * @return the new group, or null if the selection can't be grouped
+	 */
+	public @Nullable WaypointGroup makeGroup() {
+		if (multi.size() < 2) return null;
+		List<Waypoint> members = new ArrayList<>();
+		for (Waypoint w : list != null ? list.waypointOrder() : manager.all()) {
+			if (multi.contains(w)) members.add(w);
+		}
+		WaypointGroup group = manager.createGroup(members);
+		if (group == null) return null;
+		clickGroupAndRebuild(group);
+		return group;
+	}
+
+	/** "Ungroup": dissolves the selected group; its first member is selected. Public for the devtest. */
+	public void ungroupSelected() {
+		WaypointGroup g = selectedGroup;
+		if (g == null) return;
+		List<Waypoint> members = manager.members(g);
+		manager.ungroup(g);
+		selectedGroup = null;
+		if (!members.isEmpty()) selectOnly(members.getFirst());
+		rebuildWidgets();
+	}
+
+	/** "Remove from group" for the selected waypoint (it stays selected). Public for the devtest. */
+	public void removeSelectedFromGroup() {
+		if (selected == null) return;
+		manager.removeFromGroup(selected);
+		rebuildWidgets();
+	}
+
+	private void clickGroupAndRebuild(WaypointGroup group) {
+		selectedGroup = group;
+		selected = null;
+		multi.clear();
+		rangeAnchor = null;
+		rebuildWidgets();
+	}
+
+	/** The waypoint being edited (or the primary of a multi-selection), if any. */
 	public @Nullable Waypoint selectedWaypoint() {
 		return selected;
+	}
+
+	/** The group being edited, if any. For the devtest. */
+	public @Nullable WaypointGroup selectedGroup() {
+		return selectedGroup;
+	}
+
+	/** The multi-selection (empty unless 2+ waypoints are selected). For the devtest. */
+	public List<Waypoint> multiSelection() {
+		return List.copyOf(multi);
 	}
 
 	/** The Undo button (null before init). For the devtest. */
 	public @Nullable Button undoButton() {
 		return undoButton;
+	}
+
+	/** The Delete button (null before init). For the devtest. */
+	public @Nullable Button deleteButton() {
+		return deleteButton;
+	}
+
+	/** The "Make group" button (null unless 2+ waypoints are selected). For the devtest. */
+	public @Nullable Button makeGroupButton() {
+		return makeGroupButton;
+	}
+
+	/** The "Remove from group" button (null unless a group member is edited). For the devtest. */
+	public @Nullable Button removeFromGroupButton() {
+		return removeFromGroupButton;
 	}
 
 	/** The X, Y and Z boxes of the editor (empty without a selection). For the devtest. */
@@ -650,7 +987,7 @@ public class WaypointScreen extends Screen {
 		graphics.blit(RenderPipelines.GUI_TEXTURED, header, 0, layout.getHeaderHeight() - 2, 0.0F, 0.0F, width, 2, 32, 2);
 		graphics.blit(RenderPipelines.GUI_TEXTURED, footer, 0, height - layout.getFooterHeight(), 0.0F, 0.0F, width, 2, 32, 2);
 
-		if (selected == null) {
+		if (selected == null && selectedGroup == null) {
 			Component hint = Component.translatable("waypy.gui.no_waypoints", WaypyClient.createKey.getTranslatedKeyMessage());
 			List<FormattedCharSequence> lines = font.split(hint, editorWidth);
 			int centerX = editorX + editorWidth / 2;
@@ -705,43 +1042,108 @@ public class WaypointScreen extends Screen {
 		return font.plainSubstrByWidth(text, Math.max(0, maxWidth - font.width(dots))) + dots;
 	}
 
+	/** Distance from the player to {@code point} in {@code dimension} (e.g. {@code 24m}), or the dimension's id elsewhere. */
+	private Component distanceText(Vec3 point, net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension) {
+		LocalPlayer player = minecraft.player;
+		if (player == null || !player.level().dimension().equals(dimension)) {
+			return Component.literal(dimension.identifier().toString());
+		}
+		return Component.translatable("waypy.gui.distance", Math.round(point.distanceTo(player.position())));
+	}
+
 	// ------------------------------------------------------------------ widgets
 
-	/** The waypoint list: rows with a color swatch, the name and the distance to the player. */
+	/**
+	 * The list: each group's row followed by its members (indented), then the ungrouped waypoints. The vanilla
+	 * selection is the primary row (the edited waypoint or group); the other rows of a multi-selection get a lighter
+	 * outline of the same shape.
+	 */
 	private final class WaypointList extends ObjectSelectionList<WaypointList.Entry> {
 		private boolean populating;
+		/** Set by a row's mouse click, which applies the selection itself; the focus change that follows only highlights. */
+		private boolean clickHandled;
 
 		WaypointList(Minecraft minecraft, int width, int height, int y) {
 			super(minecraft, width, height, y, ENTRY_HEIGHT);
 		}
 
-		void populate(List<Waypoint> waypoints, @Nullable Waypoint initial) {
+		void populate() {
 			populating = true;
 			clearEntries();
-			Entry initialEntry = null;
-			for (Waypoint w : waypoints) {
-				Entry entry = new Entry(w);
-				addEntry(entry);
-				if (w == initial) initialEntry = entry;
+			for (WaypointGroup group : manager.groups()) {
+				addEntry(new GroupEntry(group));
+				for (Waypoint member : manager.members(group)) addEntry(new WaypointEntry(member, true));
 			}
-			setSelected(initialEntry);
-			if (initialEntry != null) centerScrollOn(initialEntry);
+			for (Waypoint w : manager.all()) {
+				if (manager.groupOf(w.id) == null) addEntry(new WaypointEntry(w, false));
+			}
+			Entry primary = primaryEntry();
+			super.setSelected(primary);
+			if (primary != null) centerScrollOn(primary);
 			populating = false;
+		}
+
+		/** The waypoints in row order (members under their group first, then the ungrouped ones). */
+		List<Waypoint> waypointOrder() {
+			List<Waypoint> out = new ArrayList<>();
+			for (Entry e : children()) {
+				if (e instanceof WaypointEntry we) out.add(we.waypoint);
+			}
+			return out;
+		}
+
+		/** The row of the edited waypoint or group, if any. */
+		@Nullable Entry primaryEntry() {
+			for (Entry e : children()) {
+				if (selectedGroup != null ? e instanceof GroupEntry g && g.group == selectedGroup
+						: e instanceof WaypointEntry w && w.waypoint == selected) {
+					return e;
+				}
+			}
+			return null;
+		}
+
+		/** Moves the vanilla selection to the primary row without selecting anything. */
+		void highlightPrimary() {
+			super.setSelected(primaryEntry());
 		}
 
 		@Override
 		public void setSelected(@Nullable Entry entry) {
-			if (entry == null && !populating && selected != null) {
-				// Keep the edited waypoint highlighted when keyboard navigation leaves the list.
-				for (Entry e : children()) {
-					if (e.waypoint == selected) {
-						super.setSelected(e);
-						return;
-					}
+			if (clickHandled) {
+				// The click (which may have been a Ctrl/Shift click) already changed the selection.
+				clickHandled = false;
+				super.setSelected(primaryEntry());
+				return;
+			}
+			if (entry == null && !populating) {
+				// Keep the edited row highlighted when keyboard navigation leaves the list.
+				Entry primary = primaryEntry();
+				if (primary != null) {
+					super.setSelected(primary);
+					return;
 				}
 			}
 			super.setSelected(entry);
-			if (!populating && entry != null) onListSelect(entry.waypoint);
+			if (!populating && entry != null) entry.select(false, false); // keyboard navigation: a plain select
+		}
+
+		@Override
+		protected void extractItem(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a, Entry entry) {
+			if (entry != getSelected() && entry instanceof WaypointEntry w && isMultiSelected(w.waypoint)) {
+				extractSelection(graphics, entry, MULTI_OUTLINE);
+			}
+			super.extractItem(graphics, mouseX, mouseY, a, entry);
+		}
+
+		@Override
+		protected void extractSelection(GuiGraphicsExtractor graphics, Entry entry, int outlineColor) {
+			int x0 = entry.getX() + entry.indent();
+			int y0 = entry.getY();
+			int x1 = entry.getX() + entry.getWidth();
+			int y1 = y0 + entry.getHeight();
+			graphics.fill(x0, y0, x1, y1, outlineColor);
+			graphics.fill(x0 + 1, y0 + 1, x1 - 1, y1 - 1, 0xFF000000);
 		}
 
 		@Override
@@ -755,21 +1157,55 @@ public class WaypointScreen extends Screen {
 			return scrollable() ? getWidth() - 20 : getWidth() - 8;
 		}
 
-		final class Entry extends ObjectSelectionList.Entry<Entry> {
-			final Waypoint waypoint;
+		abstract class Entry extends ObjectSelectionList.Entry<Entry> {
+			/** Applies a click (or keyboard selection) on this row. */
+			abstract void select(boolean shift, boolean ctrl);
 
-			Entry(Waypoint waypoint) {
+			/** Left indent of the row's content and selection outline. */
+			int indent() {
+				return 0;
+			}
+
+			@Override
+			public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+				boolean ctrl = event.hasControlDown() || (event.modifiers() & GLFW.GLFW_MOD_SUPER) != 0;
+				select(event.hasShiftDown(), ctrl);
+				clickHandled = true;
+				return true;
+			}
+
+			/** A 16x16 colour swatch with a black border at ({@code x}, {@code y}). */
+			void swatch(GuiGraphicsExtractor graphics, int x, int y, int color) {
+				graphics.fill(x, y, x + 16, y + 16, 0xFF000000);
+				graphics.fill(x + 1, y + 1, x + 15, y + 15, 0xFF000000 | color);
+			}
+		}
+
+		/** A waypoint row: swatch, name and distance (plus the block count for clumps); indented under its group. */
+		final class WaypointEntry extends Entry {
+			final Waypoint waypoint;
+			private final boolean member;
+
+			WaypointEntry(Waypoint waypoint, boolean member) {
 				this.waypoint = waypoint;
+				this.member = member;
+			}
+
+			@Override
+			void select(boolean shift, boolean ctrl) {
+				clickWaypoint(waypoint, shift, ctrl);
+			}
+
+			@Override
+			int indent() {
+				return member ? MEMBER_INDENT : 0;
 			}
 
 			@Override
 			public void extractContent(GuiGraphicsExtractor graphics, int mouseX, int mouseY, boolean hovered, float a) {
-				int x = getContentX();
+				int x = getContentX() + indent();
 				int y = getContentY();
-				int swatchY = getContentYMiddle() - 8;
-				graphics.fill(x, swatchY, x + 16, swatchY + 16, 0xFF000000);
-				graphics.fill(x + 1, swatchY + 1, x + 15, swatchY + 15, 0xFF000000 | waypoint.color);
-
+				swatch(graphics, x, getContentYMiddle() - 8, waypoint.color);
 				int textX = x + 16 + 4;
 				int maxWidth = getContentRight() - textX;
 				graphics.text(font, ellipsize(font, waypoint.name, maxWidth), textX, y + 1, waypoint.visible ? 0xFFFFFFFF : GRAY);
@@ -778,17 +1214,8 @@ public class WaypointScreen extends Screen {
 
 			/** Distance (or dimension), plus the block count for clumps: {@code 24m · 12 blocks}. */
 			private Component detailText() {
-				Component distance = distanceText();
+				Component distance = distanceText(waypoint.centre(), waypoint.dimension);
 				return waypoint.isClump() ? Component.translatable("waypy.gui.block_count", distance, waypoint.size()) : distance;
-			}
-
-			private Component distanceText() {
-				LocalPlayer player = minecraft.player;
-				if (player == null || !player.level().dimension().equals(waypoint.dimension)) {
-					return Component.literal(waypoint.dimension.identifier().toString());
-				}
-				long metres = Math.round(waypoint.centre().distanceTo(player.position()));
-				return Component.translatable("waypy.gui.distance", metres);
 			}
 
 			@Override
@@ -796,30 +1223,86 @@ public class WaypointScreen extends Screen {
 				return Component.translatable("narrator.select", waypoint.name);
 			}
 		}
+
+		/** A group row: a stacked swatch in the group colour, the name and {@code 3 waypoints · 24m}. */
+		final class GroupEntry extends Entry {
+			final WaypointGroup group;
+
+			GroupEntry(WaypointGroup group) {
+				this.group = group;
+			}
+
+			@Override
+			void select(boolean shift, boolean ctrl) {
+				clickGroup(group);
+			}
+
+			@Override
+			public void extractContent(GuiGraphicsExtractor graphics, int mouseX, int mouseY, boolean hovered, float a) {
+				int x = getContentX();
+				int y = getContentY();
+				int swatchY = getContentYMiddle() - 8;
+				// Two offset swatches ("a stack") tell a group row from a waypoint row.
+				graphics.fill(x + 3, swatchY - 1, x + 17, swatchY + 13, 0xFF000000);
+				graphics.fill(x + 4, swatchY, x + 16, swatchY + 12, 0xFF000000 | darker(group.color));
+				graphics.fill(x - 1, swatchY + 3, x + 13, swatchY + 17, 0xFF000000);
+				graphics.fill(x, swatchY + 4, x + 12, swatchY + 16, 0xFF000000 | group.color);
+				int textX = x + 16 + 4;
+				int maxWidth = getContentRight() - textX;
+				graphics.text(font, ellipsize(font, group.name, maxWidth), textX, y + 1, 0xFFFFFFFF);
+				List<Waypoint> members = manager.members(group);
+				Component detail = Component.translatable("waypy.gui.group_detail", members.size(),
+						distanceText(centre(members), group.dimension));
+				graphics.text(font, ellipsize(font, detail.getString(), maxWidth), textX, y + 11, GRAY);
+			}
+
+			private static int darker(int rgb) {
+				return ((rgb >> 1) & 0x7F7F7F);
+			}
+
+			private static Vec3 centre(List<Waypoint> members) {
+				double sx = 0, sy = 0, sz = 0;
+				for (Waypoint w : members) {
+					Vec3 c = w.centre();
+					sx += c.x;
+					sy += c.y;
+					sz += c.z;
+				}
+				int n = Math.max(1, members.size());
+				return new Vec3(sx / n, sy / n, sz / n);
+			}
+
+			@Override
+			public Component getNarration() {
+				return Component.translatable("narrator.select", group.name);
+			}
+		}
 	}
 
-	/** One of the 16 dye-color squares. Selected (current color) gets a white border. */
+	/** One of the 16 dye-color squares, editing a colour through {@code get}/{@code set}. The current color gets a white border. */
 	private final class ColorSwatch extends AbstractButton {
 		private final int color;
-		private final Waypoint waypoint;
+		private final IntSupplier get;
+		private final IntConsumer set;
 
-		ColorSwatch(DyeColor dye, Waypoint waypoint) {
+		ColorSwatch(DyeColor dye, IntSupplier get, IntConsumer set) {
 			super(0, 0, SWATCH_SIZE, SWATCH_SIZE, Component.translatable("color.minecraft." + dye.getName()));
 			this.color = dye.getTextureDiffuseColor() & 0xFFFFFF;
-			this.waypoint = waypoint;
+			this.get = get;
+			this.set = set;
 			setTooltip(Tooltip.create(getMessage()));
 		}
 
 		@Override
 		public void onPress(InputWithModifiers input) {
-			waypoint.color = color;
+			set.accept(color);
 			manager.markDirty();
 			if (hexBox != null) hexBox.setValue(formatHex(color));
 		}
 
 		@Override
 		protected void extractContents(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
-			boolean current = (waypoint.color & 0xFFFFFF) == color;
+			boolean current = (get.getAsInt() & 0xFFFFFF) == color;
 			int border = current ? 0xFFFFFFFF : isHoveredOrFocused() ? LIGHT_GRAY : 0xFF000000;
 			int x = getX();
 			int y = getY();
@@ -874,6 +1357,41 @@ public class WaypointScreen extends Screen {
 		protected void applyValue() {
 			waypoint.highlightOpacity = (float) value;
 			manager.markDirty();
+		}
+	}
+
+	/** A group's combine distance, over {@link WaypyConfig#COMBINE_DISTANCE_STEPS} (5..50 by 1, then by 5 up to 200). */
+	private final class CombineDistanceSlider extends AbstractSliderButton {
+		private static final List<Integer> STEPS = WaypyConfig.COMBINE_DISTANCE_STEPS;
+		private final WaypointGroup group;
+
+		CombineDistanceSlider(int width, WaypointGroup group) {
+			super(0, 0, width, DEFAULT_HEIGHT, CommonComponents.EMPTY, position(group.combineDistance));
+			this.group = group;
+			updateMessage();
+		}
+
+		private static double position(int blocks) {
+			int index = STEPS.indexOf(WaypyConfig.snapCombineDistance(blocks));
+			return index / (double) (STEPS.size() - 1);
+		}
+
+		private int blocks() {
+			return STEPS.get((int) Math.round(value * (STEPS.size() - 1)));
+		}
+
+		@Override
+		protected void updateMessage() {
+			setMessage(Component.translatable("waypy.gui.combine_distance.value", blocks()));
+		}
+
+		@Override
+		protected void applyValue() {
+			int blocks = blocks();
+			if (group.combineDistance != blocks) {
+				group.combineDistance = blocks;
+				manager.markDirty();
+			}
 		}
 	}
 }
