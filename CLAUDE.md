@@ -19,3 +19,8 @@ The main Claude session acts as **architect and orchestrator**: it plans, breaks
 - JDK 25 is required (`/usr/lib/jvm/java-25-openjdk-amd64`).
 - Build: `./gradlew build`. The jar lands in `build/libs/`.
 - Minecraft 26.x is unobfuscated, so code uses Mojang names directly. Check APIs against the actual game and Fabric API sources (`./gradlew genSources`), not against memory of older versions.
+
+## Visual check (headless screenshots)
+
+- `scripts/devtest-screenshots.sh [--fresh]` runs the client under Xvfb with software GL, plays the scripted scenario in `src/devtest` (dev-only mod `waypy-devtest`, never in the release jar) and writes PNGs to `run-devtest/screenshots/`. About 1 minute per run.
+- The scenario lives in `src/devtest/java/dev/waypy/devtest/Scenario.java`; options preset in `src/devtest/options.txt`.

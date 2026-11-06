@@ -13,12 +13,49 @@ base {
 repositories {
 }
 
+// Dev-only screenshot harness (src/devtest). Never part of the release jar: the `jar`/`sourcesJar`
+// tasks only package `main`. Run it with `./gradlew runDevtest` or `scripts/devtest-screenshots.sh`.
+sourceSets {
+	devtest {
+		compileClasspath += main.compileClasspath + main.output
+		runtimeClasspath += main.runtimeClasspath + main.output
+	}
+}
+
 loom {
 	mods {
 		"waypy" {
 			sourceSet sourceSets.main
 		}
+		"waypy-devtest" {
+			sourceSet sourceSets.devtest
+		}
 	}
+
+	runs {
+		devtest {
+			client()
+			name = "Devtest Client"
+			source sourceSets.devtest
+			runDir = "run-devtest"
+			ideConfigGenerated = false
+			// The world is created by the devtest mod if it does not exist yet (quick play then falls back
+			// to an error screen that the harness replaces with world creation).
+			programArgs "--quickPlaySingleplayer", "waypy-devtest", "--username", "WaypyDev", "--width", "1280", "--height", "720", "--graphicsBackend", "opengl"
+			vmArgs "-Dwaypy.devtest=true"
+		}
+	}
+}
+
+// Seed run-devtest/options.txt (small render distance, no onboarding, no pause on focus loss) before each run.
+def devtestRunDir = layout.projectDirectory.dir("run-devtest")
+def devtestOptions = layout.projectDirectory.file("src/devtest/options.txt")
+tasks.register("prepareDevtestRun", Copy) {
+	from devtestOptions
+	into devtestRunDir
+}
+tasks.matching { it.name == "runDevtest" }.configureEach {
+	dependsOn "prepareDevtestRun"
 }
 
 dependencies {
