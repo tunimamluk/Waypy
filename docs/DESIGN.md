@@ -9,7 +9,8 @@ Client-side Fabric waypoint mod for Minecraft **26.2** (Java 25, Mojang names �
 
 | Key (rebindable, category "Waypy") | Action |
 |---|---|
-| `N` — `key.waypy.create` | Raycast from the camera (max 512 blocks, ignores fluids). If a block is hit, create a new waypoint at that block, make it the **selected** waypoint, and show an action-bar message `Waypoint "<name>" created`. If nothing is hit, show `No block in sight`. |
+| `N` — `key.waypy.create` | Create a new waypoint at the block the player is **standing on** (block below the feet; if that is air, the first non-air block straight down; if none, `No block below you`). Make it the **selected** waypoint and show an action-bar message `Waypoint "<name>" created`. |
+| `Shift` + `N` | Same as `N`, but the block comes from a raycast from the camera (max 512 blocks, ignores fluids). On a miss, show `No block in sight`. |
 | `M` — `key.waypy.menu` | Open the Waypy menu with the **selected** waypoint pre-selected. |
 
 New waypoint defaults: name `Waypoint <n>` (n = next free number), color cycles through a palette of vanilla dye colors, style `BEACON`, logo `BLOCK` using the item of the targeted block (fallback `minecraft:compass`... any non-air item), opacity 0.4, throughBlocks true, visible true.
