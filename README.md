@@ -12,7 +12,7 @@ Waypy is a client-side waypoint mod for Fabric on Minecraft 26.2. Mark places in
 
 Put the jar in your `.minecraft/mods` folder.
 
-- A prebuilt jar is committed at [`dist/waypy-0.3.0.jar`](dist/waypy-0.3.0.jar).
+- A prebuilt jar is committed at [`dist/waypy-0.4.0.jar`](dist/waypy-0.4.0.jar).
 - CI also builds the jar on every push. Open the Actions tab, pick a run and download the `waypy-jar` artifact.
 
 ## Controls
