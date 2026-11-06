@@ -290,7 +290,6 @@ public final class WaypointManager {
 		o.addProperty("style", w.style.name());
 		o.addProperty("logoType", w.logoType.name());
 		o.addProperty("logoBlock", w.logoBlock.toString());
-		o.addProperty("logoText", w.logoText);
 		o.addProperty("highlightOpacity", w.highlightOpacity);
 		o.addProperty("throughBlocks", w.throughBlocks);
 		o.addProperty("visible", w.visible);
@@ -311,8 +310,9 @@ public final class WaypointManager {
 
 		Waypoint w = new Waypoint(id, name, pos, dim, color, logo);
 		w.style = parseEnum(WaypointStyle.class, o, "style", WaypointStyle.BEACON);
+		// Migration: the removed TEXT logo (and any unknown value) loads as BLOCK, keeping the stored logoBlock;
+		// an old "logoText" field is ignored.
 		w.logoType = parseEnum(LogoType.class, o, "logoType", LogoType.BLOCK);
-		if (o.has("logoText")) w.setLogoText(o.get("logoText").getAsString());
 		if (o.has("highlightOpacity")) {
 			float f = o.get("highlightOpacity").getAsFloat();
 			w.highlightOpacity = Float.isFinite(f) ? Math.clamp(f, 0f, 1f) : 0.4f;
@@ -334,7 +334,7 @@ public final class WaypointManager {
 		if (!o.has(key)) return fallback;
 		try {
 			return Enum.valueOf(type, o.get(key).getAsString().toUpperCase(Locale.ROOT));
-		} catch (IllegalArgumentException e) {
+		} catch (RuntimeException e) { // unknown name, or not a string
 			return fallback;
 		}
 	}

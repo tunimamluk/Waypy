@@ -23,6 +23,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 
+import dev.waypy.config.WaypyConfig;
 import dev.waypy.gui.WaypointScreen;
 import dev.waypy.render.WaypointRenderer;
 import dev.waypy.waypoint.Waypoint;
@@ -44,6 +45,8 @@ public final class WaypyClient implements ClientModInitializer {
 				new KeyMapping("key.waypy.create", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_N, CATEGORY));
 		menuKey = KeyMappingHelper.registerKeyMapping(
 				new KeyMapping("key.waypy.menu", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_M, CATEGORY));
+
+		WaypyConfig.load();
 
 		WaypointManager manager = WaypointManager.get();
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> manager.onJoin(client));

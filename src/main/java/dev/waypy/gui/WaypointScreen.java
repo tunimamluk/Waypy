@@ -23,6 +23,7 @@ import net.minecraft.client.gui.components.events.ContainerEventHandler;
 import net.minecraft.client.gui.layouts.GridLayout;
 import net.minecraft.client.gui.layouts.HeaderAndFooterLayout;
 import net.minecraft.client.gui.layouts.LinearLayout;
+import net.minecraft.client.gui.layouts.SpacerElement;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.client.gui.screens.Screen;
@@ -58,13 +59,11 @@ public class WaypointScreen extends Screen {
 	private static final Component HEX_LABEL = Component.translatable("waypy.gui.color.hex");
 	private static final Component STYLE_LABEL = Component.translatable("waypy.gui.style");
 	private static final Component LOGO_LABEL = Component.translatable("waypy.gui.logo");
-	private static final Component LOGO_TEXT_LABEL = Component.translatable("waypy.gui.logo_text");
-	private static final Component LOGO_TEXT_HINT = Component.translatable("waypy.gui.logo_text.hint");
-	private static final Component LOGO_TEXT_TOOLTIP = Component.translatable("waypy.gui.logo_text.tooltip", Waypoint.MAX_LOGO_TEXT_LENGTH);
 	private static final Component LOGO_BLOCK_TOOLTIP = Component.translatable("waypy.gui.logo_block.tooltip");
 	private static final Component OPACITY_LABEL = Component.translatable("waypy.gui.opacity");
 	private static final Component THROUGH_BLOCKS_LABEL = Component.translatable("waypy.gui.through_blocks");
 	private static final Component VISIBLE_LABEL = Component.translatable("waypy.gui.visible");
+	private static final Component SETTINGS = Component.translatable("waypy.gui.settings");
 
 	/** Height of one list row: 2px padding + two text lines / a 16px swatch + 2px padding. */
 	private static final int ENTRY_HEIGHT = 24;
@@ -81,6 +80,8 @@ public class WaypointScreen extends Screen {
 	private static final int SWATCH_COLUMNS = 8;
 	private static final int SWATCH_GRID_WIDTH = SWATCH_COLUMNS * SWATCH_SIZE + (SWATCH_COLUMNS - 1) * SWATCH_GAP;
 	private static final int INVALID_TEXT_COLOR = 0xFFFF5555;
+	private static final int SETTINGS_MIN_WIDTH = 70;
+	private static final int SETTINGS_MAX_WIDTH = 90;
 	private static final int GRAY = 0xFF808080;
 	private static final int LIGHT_GRAY = 0xFFA0A0A0;
 
@@ -107,7 +108,6 @@ public class WaypointScreen extends Screen {
 	private @Nullable CycleButton<WaypointStyle> styleButton;
 	private @Nullable CycleButton<LogoType> logoTypeButton;
 	private @Nullable BlockIconButton logoBlockButton;
-	private @Nullable EditBox logoTextBox;
 	private @Nullable OpacitySlider opacitySlider;
 	private @Nullable Checkbox throughBlocksBox;
 	private @Nullable CycleButton<Boolean> visibleButton;
@@ -155,6 +155,26 @@ public class WaypointScreen extends Screen {
 
 		// Footer last so it comes last in tab order.
 		layout.visitWidgets(this::addRenderableWidget);
+		addSettingsButton();
+	}
+
+	/**
+	 * "Settings..." in the header row, level with the title and right-aligned to the editor column's right edge.
+	 * Narrowed (or moved right, up to the screen edge) so it never overlaps the centred title.
+	 */
+	private void addSettingsButton() {
+		int headerHeight = layout.getHeaderHeight();
+		int buttonWidth = Math.clamp(font.width(SETTINGS) + 16, SETTINGS_MIN_WIDTH, SETTINGS_MAX_WIDTH);
+		int right = Math.min(editorX + editorWidth, width - 4);
+		int minLeft = (width + font.width(title)) / 2 + 8; // keep clear of the title
+		if (right - buttonWidth < minLeft) {
+			right = width - 4;
+			buttonWidth = Math.min(buttonWidth, right - minLeft);
+		}
+		if (buttonWidth < 20) return; // absurdly narrow window: no room
+		int y = Math.max(0, (headerHeight - Button.DEFAULT_HEIGHT) / 2);
+		addRenderableWidget(Button.builder(SETTINGS, b -> minecraft.gui.setScreen(new WaypySettingsScreen(this)))
+				.bounds(right - buttonWidth, y, buttonWidth, Button.DEFAULT_HEIGHT).build());
 	}
 
 	/** Splits the width between list and editor, shrinking the list first and the editor second. */
@@ -190,7 +210,7 @@ public class WaypointScreen extends Screen {
 			});
 		}
 		swatches.clear();
-		nameBox = hexBox = logoTextBox = null;
+		nameBox = hexBox = null;
 		styleButton = null;
 		logoTypeButton = null;
 		logoBlockButton = null;
@@ -257,16 +277,6 @@ public class WaypointScreen extends Screen {
 					})));
 			logoBlockButton.setTooltip(Tooltip.create(LOGO_BLOCK_TOOLTIP));
 
-			logoTextBox = new EditBox(font, half, Button.DEFAULT_HEIGHT, LOGO_TEXT_LABEL);
-			logoTextBox.setMaxLength(Waypoint.MAX_LOGO_TEXT_LENGTH);
-			logoTextBox.setValue(w.logoText);
-			logoTextBox.setHint(LOGO_TEXT_HINT.copy().withStyle(ChatFormatting.DARK_GRAY));
-			logoTextBox.setTooltip(Tooltip.create(LOGO_TEXT_TOOLTIP));
-			logoTextBox.setResponder(value -> {
-				w.setLogoText(value);
-				manager.markDirty();
-			});
-
 			opacitySlider = new OpacitySlider(half, w);
 
 			throughBlocksBox = Checkbox.builder(THROUGH_BLOCKS_LABEL, font)
@@ -299,7 +309,7 @@ public class WaypointScreen extends Screen {
 
 		Waypoint w = selected;
 		if (w != null && nameBox != null && hexBox != null && styleButton != null && logoTypeButton != null
-				&& logoBlockButton != null && logoTextBox != null && opacitySlider != null && throughBlocksBox != null
+				&& logoBlockButton != null && opacitySlider != null && throughBlocksBox != null
 				&& visibleButton != null) {
 			editorContent.addChild(label(NAME_LABEL));
 			editorContent.addChild(nameBox);
@@ -328,8 +338,9 @@ public class WaypointScreen extends Screen {
 				editorContent.addChild(row1, s -> s.paddingTop(4));
 
 				LinearLayout row2 = LinearLayout.horizontal().spacing(COLUMN_GAP);
+				// Logo: None has no block button; a spacer keeps "Visible" in the right column.
 				if (logoDetail != null) row2.addChild(logoDetail);
-				else row2.addChild(logoTextBox);
+				else row2.addChild(SpacerElement.width(logoBlockButton.getWidth()));
 				row2.addChild(visibleButton);
 				editorContent.addChild(row2);
 
@@ -343,7 +354,6 @@ public class WaypointScreen extends Screen {
 				editorContent.addChild(styleButton, s -> s.paddingTop(4));
 				editorContent.addChild(logoTypeButton);
 				if (logoDetail != null) editorContent.addChild(logoDetail);
-				else editorContent.addChild(logoTextBox);
 				if (highlight) {
 					editorContent.addChild(opacitySlider);
 					editorContent.addChild(throughBlocksBox);
@@ -444,7 +454,7 @@ public class WaypointScreen extends Screen {
 	private static Component logoTypeName(LogoType type) {
 		return switch (type) {
 			case BLOCK -> Component.translatable("waypy.gui.logo.block");
-			case TEXT -> Component.translatable("waypy.gui.logo.text");
+			case NONE -> Component.translatable("waypy.gui.logo.none");
 		};
 	}
 

@@ -4,6 +4,6 @@ package dev.waypy.waypoint;
 public enum LogoType {
 	/** The item icon of {@link Waypoint#logoBlock}. */
 	BLOCK,
-	/** {@link Waypoint#logoText} on a dark backing plate. */
-	TEXT
+	/** No logo; the label (if shown) sits where the logo would be. */
+	NONE
 }

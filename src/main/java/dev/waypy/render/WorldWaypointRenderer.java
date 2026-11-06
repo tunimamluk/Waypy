@@ -28,6 +28,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
+import dev.waypy.config.WaypyConfig;
 import dev.waypy.waypoint.Waypoint;
 import dev.waypy.waypoint.WaypointManager;
 import dev.waypy.waypoint.WaypointStyle;
@@ -70,8 +71,12 @@ final class WorldWaypointRenderer {
 		float partialTick = minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false);
 		float animationTime = Math.floorMod(level.getGameTime(), 40L) + partialTick;
 		boolean scoping = minecraft.player != null && minecraft.player.isScoping();
+		// "Waypoint render distance" setting: past it only the HUD logo/label remains.
+		double cutoff = WaypyConfig.get().maxWorldRenderDistance();
+		double cutoffSq = cutoff * cutoff;
 
 		for (Waypoint waypoint : waypoints) {
+			if (Vec3.atCenterOf(waypoint.pos).distanceToSqr(camera.pos) > cutoffSq) continue;
 			if (waypoint.style == WaypointStyle.BEACON) {
 				submitBeam(waypoint, level, camera, poseStack, collector, animationTime, scoping);
 			} else {

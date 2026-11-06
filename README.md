@@ -31,11 +31,26 @@ The menu lists the waypoints of the current world on the left and edits the sele
 
 - a name and a color (16 dye swatches or a hex `#RRGGBB` value)
 - a style: **Beacon** (a beam up to build height) or **Block Selection** (a tinted box with an outline)
-- a logo shown above the waypoint: a **Block** icon you pick from a list, or **Text** of up to 8 characters
+- a logo shown above the waypoint: a **Block** icon you pick from a list (by default the block the waypoint is on), or **None** for just the label
 - for Block Selection, an opacity slider and a "Render through blocks" option
 - a Visible toggle
 
 Changes apply live and are saved when you close the menu.
+
+## Settings
+
+Open them with the **Settings...** button at the top right of the menu. They apply to all worlds.
+
+| Setting | Default | What it does |
+|---|---|---|
+| Waypoint Render Distance | 512 blocks | Beacon beams and block highlights farther away are not drawn; the logo and label stay. 16–4096 blocks or Unlimited. |
+| Icon Size | 100% | Size of logos and labels, 50–200%. |
+| Shrink with Distance | ON | Logos and labels shrink from full size at 16 blocks to the minimum size at 256 blocks. Labels never get smaller than 50%. |
+| Minimum Size | 50% | Size of far logos when shrinking, 25–100%. |
+| Labels | Always | Always, Looking At (only the waypoint nearest the crosshair) or Off. |
+| Distance in Label | ON | Show the distance after the name. |
+
+Settings are saved in `<.minecraft>/config/waypy.json`.
 
 ## Where waypoints are saved
 
