@@ -1,6 +1,8 @@
 package dev.waypy.render;
 
 import java.util.List;
+import java.util.Map;
+import java.util.WeakHashMap;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
@@ -53,7 +55,23 @@ final class WorldWaypointRenderer {
 	/** Far beams are clamped so their farthest point stays within this fraction of the camera's far plane. */
 	private static final double FAR_PLANE_MARGIN = 0.9;
 
+	/** Merged highlight geometry per waypoint, rebuilt only when the waypoint's blocks change (its version). */
+	private static final Map<Waypoint, ClumpMesh> MESHES = new WeakHashMap<>();
+
 	private WorldWaypointRenderer() {
+	}
+
+	/**
+	 * Distance from {@code point} to the nearest point of the box spanned by the waypoint's block centres. For a
+	 * single block this is the distance to its centre; for a clump it is (at most) the distance to its nearest block,
+	 * so a long clump next to the player is not cut off because its centre is far away. O(1) per waypoint.
+	 */
+	static double distanceSqTo(Waypoint waypoint, Vec3 point) {
+		AABB b = waypoint.bounds();
+		double dx = Math.max(0, Math.max(b.minX + 0.5 - point.x, point.x - (b.maxX - 0.5)));
+		double dy = Math.max(0, Math.max(b.minY + 0.5 - point.y, point.y - (b.maxY - 0.5)));
+		double dz = Math.max(0, Math.max(b.minZ + 0.5 - point.z, point.z - (b.maxZ - 0.5)));
+		return dx * dx + dy * dy + dz * dz;
 	}
 
 	static void collectSubmits(LevelRenderContext context) {
@@ -76,7 +94,7 @@ final class WorldWaypointRenderer {
 		double cutoffSq = cutoff * cutoff;
 
 		for (Waypoint waypoint : waypoints) {
-			if (Vec3.atCenterOf(waypoint.pos).distanceToSqr(camera.pos) > cutoffSq) continue;
+			if (distanceSqTo(waypoint, camera.pos) > cutoffSq) continue;
 			if (waypoint.style == WaypointStyle.BEACON) {
 				submitBeam(waypoint, level, camera, poseStack, collector, animationTime, scoping);
 			} else {
@@ -89,9 +107,11 @@ final class WorldWaypointRenderer {
 
 	private static void submitBeam(Waypoint waypoint, ClientLevel level, CameraRenderState camera, PoseStack poseStack,
 			SubmitNodeCollector collector, float animationTime, boolean scoping) {
-		BlockPos pos = waypoint.pos;
-		// The beam starts on top of the waypoint block (so a solid block doesn't hide its base)
-		// and ends at the build limit. Only the position is used, so the chunk need not be loaded.
+		// One beam per waypoint, from the clump's beam block (nearest the centroid in XZ), starting on top of the
+		// highest clump block in that column (so a solid block doesn't hide its base) and ending at the build limit.
+		// Only the position is used, so the chunk need not be loaded.
+		BlockPos beam = waypoint.beamBlock();
+		BlockPos pos = new BlockPos(beam.getX(), waypoint.beamColumnTopY(), beam.getZ());
 		int beamBottom = pos.getY() + 1;
 		int beamTop = level.getMaxY() + 1;
 		int height = beamTop - beamBottom;
@@ -201,24 +221,29 @@ final class WorldWaypointRenderer {
 
 	private static void submitHighlight(Minecraft minecraft, Waypoint waypoint, CameraRenderState camera, PoseStack poseStack,
 			SubmitNodeCollector collector, double maxDistance) {
-		BlockPos pos = waypoint.pos;
 		Vec3 cam = camera.pos;
-		if (Vec3.atCenterOf(pos).distanceToSqr(cam) > maxDistance * maxDistance) return;
-		AABB world = new AABB(pos).inflate(HIGHLIGHT_INFLATE);
-		if (!camera.cullFrustum.isVisible(world)) return;
+		if (distanceSqTo(waypoint, cam) > maxDistance * maxDistance) return;
+		ClumpMesh mesh = MESHES.get(waypoint);
+		if (mesh == null || mesh.version != waypoint.version()) {
+			mesh = ClumpMesh.build(waypoint, HIGHLIGHT_INFLATE);
+			MESHES.put(waypoint, mesh);
+		}
+		if (!camera.cullFrustum.isVisible(mesh.bounds)) return;
 
-		float[] box = {
-				(float) (world.minX - cam.x), (float) (world.minY - cam.y), (float) (world.minZ - cam.z),
-				(float) (world.maxX - cam.x), (float) (world.maxY - cam.y), (float) (world.maxZ - cam.z)
-		};
+		// Camera-relative offset of the mesh origin (double precision first, then the small mesh floats are added).
+		float ox = (float) (mesh.origin.getX() - cam.x);
+		float oy = (float) (mesh.origin.getY() - cam.y);
+		float oz = (float) (mesh.origin.getZ() - cam.z);
 		int alpha = Math.round(Math.clamp(waypoint.highlightOpacity, 0f, 1f) * 255f);
 		int fillColor = ARGB.color(alpha, waypoint.color);
 		int lineColor = ARGB.opaque(waypoint.color);
 		float lineWidth = minecraft.gameRenderer.gameRenderState().windowRenderState.appropriateLineWidth * OUTLINE_WIDTH_SCALE;
 		Matrix4f viewRotation = new Matrix4f(camera.viewRotationMatrix);
+		float[] quads = mesh.quads;
+		float[] lines = mesh.lines;
 
-		SubmitNodeCollector.CustomGeometryRenderer fill = (pose, buffer) -> emitFilledBox(pose, buffer, box, fillColor);
-		SubmitNodeCollector.CustomGeometryRenderer outline = (pose, buffer) -> emitOutline(pose, buffer, box, lineColor, lineWidth, viewRotation);
+		SubmitNodeCollector.CustomGeometryRenderer fill = (pose, buffer) -> emitFaces(pose, buffer, quads, ox, oy, oz, fillColor);
+		SubmitNodeCollector.CustomGeometryRenderer outline = (pose, buffer) -> emitOutline(pose, buffer, lines, ox, oy, oz, lineColor, lineWidth, viewRotation);
 
 		if (waypoint.throughBlocks) {
 			// ALWAYS_ON_TOP runs after terrain, translucents, clouds, weather and the Fabulous composite,
@@ -239,21 +264,13 @@ final class WorldWaypointRenderer {
 		}
 	}
 
-	/** Six quads (POSITION_COLOR), both windings visible since the pipeline doesn't cull. */
-	private static void emitFilledBox(PoseStack.Pose pose, VertexConsumer buffer, float[] b, int color) {
-		float x0 = b[0], y0 = b[1], z0 = b[2], x1 = b[3], y1 = b[4], z1 = b[5];
-		// -Y
-		quad(pose, buffer, color, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1);
-		// +Y
-		quad(pose, buffer, color, x0, y1, z0, x0, y1, z1, x1, y1, z1, x1, y1, z0);
-		// -Z
-		quad(pose, buffer, color, x0, y0, z0, x0, y1, z0, x1, y1, z0, x1, y0, z0);
-		// +Z
-		quad(pose, buffer, color, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1);
-		// -X
-		quad(pose, buffer, color, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0);
-		// +X
-		quad(pose, buffer, color, x1, y0, z0, x1, y1, z0, x1, y1, z1, x1, y0, z1);
+	/** The mesh's exposed faces as POSITION_COLOR quads (the pipelines don't cull, so one winding suffices). */
+	private static void emitFaces(PoseStack.Pose pose, VertexConsumer buffer, float[] q, float ox, float oy, float oz, int color) {
+		for (int i = 0; i + 12 <= q.length; i += 12) {
+			quad(pose, buffer, color,
+					q[i] + ox, q[i + 1] + oy, q[i + 2] + oz, q[i + 3] + ox, q[i + 4] + oy, q[i + 5] + oz,
+					q[i + 6] + ox, q[i + 7] + oy, q[i + 8] + oz, q[i + 9] + ox, q[i + 10] + oy, q[i + 11] + oz);
+		}
 	}
 
 	private static void quad(PoseStack.Pose pose, VertexConsumer buffer, int color,
@@ -265,22 +282,17 @@ final class WorldWaypointRenderer {
 		buffer.addVertex(pose, dx, dy, dz).setColor(color);
 	}
 
-	/** The 12 box edges as LINES, clipped against the camera plane like {@code GizmoFeatureRenderer#buildLines}. */
-	private static void emitOutline(PoseStack.Pose pose, VertexConsumer buffer, float[] b, int color, float width, Matrix4fc viewRotation) {
-		float x0 = b[0], y0 = b[1], z0 = b[2], x1 = b[3], y1 = b[4], z1 = b[5];
+	/** The mesh's outline edges as LINES, clipped against the camera plane like {@code GizmoFeatureRenderer#buildLines}. */
+	private static void emitOutline(PoseStack.Pose pose, VertexConsumer buffer, float[] l, float ox, float oy, float oz,
+			int color, float width, Matrix4fc viewRotation) {
 		Matrix4f toView = new Matrix4f(viewRotation).mul(pose.pose());
 		Vector4f start = new Vector4f();
 		Vector4f end = new Vector4f();
 		Vector4f startView = new Vector4f();
 		Vector4f endView = new Vector4f();
-		float[][] edges = {
-				{x0, y0, z0, x1, y0, z0}, {x0, y0, z1, x1, y0, z1}, {x0, y1, z0, x1, y1, z0}, {x0, y1, z1, x1, y1, z1},
-				{x0, y0, z0, x0, y1, z0}, {x1, y0, z0, x1, y1, z0}, {x0, y0, z1, x0, y1, z1}, {x1, y0, z1, x1, y1, z1},
-				{x0, y0, z0, x0, y0, z1}, {x1, y0, z0, x1, y0, z1}, {x0, y1, z0, x0, y1, z1}, {x1, y1, z0, x1, y1, z1}
-		};
-		for (float[] e : edges) {
-			start.set(e[0], e[1], e[2], 1.0f);
-			end.set(e[3], e[4], e[5], 1.0f);
+		for (int i = 0; i + 6 <= l.length; i += 6) {
+			start.set(l[i] + ox, l[i + 1] + oy, l[i + 2] + oz, 1.0f);
+			end.set(l[i + 3] + ox, l[i + 4] + oy, l[i + 5] + oz, 1.0f);
 			start.mul(toView, startView);
 			end.mul(toView, endView);
 			boolean startBehind = startView.z > NEAR_CLIP;

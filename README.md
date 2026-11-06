@@ -19,9 +19,12 @@ Put the jar in your `.minecraft/mods` folder.
 
 | Key | Action |
 |---|---|
-| `N` | Create a waypoint on the block you stand on |
-| `Shift` + `N` | Create a waypoint on the block you look at, up to 512 blocks away |
+| `N` | Create a waypoint on the block you stand on. On a block that already belongs to a waypoint, delete that waypoint instead |
+| Hold `N` and walk | Grow a clump: every block you walk over joins the waypoint (up to 256 blocks; blocks of other waypoints are skipped) |
+| `Shift` + `N` | Create (or delete) a waypoint on the block you look at, up to 512 blocks away. Hold it and sweep the crosshair to paint a clump |
 | `M` | Open the Waypy menu |
+
+A clump is one waypoint made of several blocks: Block Selection draws it as one merged shape, Beacon draws one beam from its middle, and the logo floats above its centre. Pressing `N` on any of its blocks deletes the whole clump.
 
 Keys can be rebound under Controls → Waypy.
 
@@ -34,6 +37,8 @@ The menu lists the waypoints of the current world on the left and edits the sele
 - a logo shown above the waypoint: a **Block** icon you pick from a list (by default the block the waypoint is on), or **None** for just the label
 - for Block Selection, an opacity slider and a "Render through blocks" option
 - a Visible toggle
+
+Clumps show their block count in the list and in the editor.
 
 Changes apply live and are saved when you close the menu.
 

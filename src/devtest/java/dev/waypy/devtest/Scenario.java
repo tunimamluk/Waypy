@@ -16,6 +16,8 @@ import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.Identifier;
 
+import dev.waypy.CreateKeyHandler;
+import dev.waypy.WaypyClient;
 import dev.waypy.config.LabelMode;
 import dev.waypy.config.WaypyConfig;
 import dev.waypy.gui.WaypointScreen;
@@ -44,6 +46,13 @@ import dev.waypy.waypoint.WaypointStyle;
  *   <li>"Far Beacon": BEACON, BLOCK logo, purple, ~200 blocks ahead, far outside the render distance (its chunk is
  *       not loaded), to check that far beams are drawn without fog.</li>
  * </ul>
+ * Clumps, behind the spawn (north, -Z), built through the N key's code path ({@link CreateKeyHandler}) and seen from
+ * a stone pillar at (-1, -1) facing north (+X is screen-right):
+ * <ul>
+ *   <li>"Floor Patch": BLOCK_HIGHLIGHT, depth-tested, a flat 4×3 patch of smooth stone set into the ground.</li>
+ *   <li>"Stair Stack": BEACON, oak-plank stairs (heights 1/2/3, two deep) with a two-block L foot; switched to
+ *       BLOCK_HIGHLIGHT for the outline screenshots.</li>
+ * </ul>
  */
 final class Scenario {
 	private static final int SURFACE_Y = -61; // top grass block of the default superflat
@@ -68,6 +77,8 @@ final class Scenario {
 	private Waypoint highlightThrough;
 	private Waypoint highlightSolid;
 	private Waypoint farBeacon;
+	private Waypoint floorPatch;
+	private Waypoint stairStack;
 
 	Scenario(Minecraft mc) {
 		this.mc = mc;
@@ -91,6 +102,8 @@ final class Scenario {
 			command("tp @a 0.5 " + FEET_Y + " 0.5 0 8");
 		}, 40);
 		step("create waypoints", () -> mc.player != null && mc.level != null, this::createWaypoints, 20);
+		step("create clumps (N key path)", () -> true, this::createClumps, 5);
+		step("N-toggle delete and clump rules", () -> true, this::checkKeyRules, 5);
 		step("wait for chunks", chunksReady(), () -> {
 		}, 60);
 		screenshot("01_world");
@@ -113,11 +126,35 @@ final class Scenario {
 		step("restore default settings", () -> true, () -> setConfig(c -> {
 		}), 5);
 
+		// Clumps, seen from the pillar north of the spawn.
+		step("position player (clumps)", this::noPendingScreenshots, () -> command("tp @a -0.5 " + (FEET_Y + 3) + " -0.5 180 35"), 40);
+		step("wait for chunks (clumps)", chunksReady(), () -> {
+		}, 40);
+		screenshot("07_clumps");
+		step("stair stack as highlight (through blocks)", this::noPendingScreenshots, () -> {
+			stairStack.style = WaypointStyle.BLOCK_HIGHLIGHT;
+			stairStack.throughBlocks = true;
+			stairStack.highlightOpacity = 0.3f;
+			floorPatch.throughBlocks = true;
+		}, 5);
+		screenshot("08_clumps_highlight");
+		step("clump highlights depth-tested", this::noPendingScreenshots, () -> {
+			stairStack.throughBlocks = false;
+			floorPatch.throughBlocks = false;
+		}, 5);
+		screenshot("09_clumps_highlight_depth");
+		step("stair stack back to beacon", this::noPendingScreenshots, () -> {
+			stairStack.style = WaypointStyle.BEACON;
+			WaypointManager.get().markDirty();
+		}, 1);
+		step("back to ground position (after clumps)", () -> true, () -> command("tp @a 0.5 " + FEET_Y + " 0.5 0 8"), 20);
+
 		menuShot("10_menu_beacon_block", () -> beaconBlock);
 		menuShot("11_menu_beacon_lapis", () -> beaconLapis);
 		menuShot("12_menu_highlight_block", () -> highlightThrough);
 		menuShot("13_menu_highlight_no_logo", () -> highlightSolid);
 		menuShot("14_menu_no_selection", () -> null);
+		menuShot("15_menu_clump", () -> floorPatch);
 
 		step("open BlockPickerScreen", () -> true, this::openBlockPicker, 30);
 		step("screenshot block picker", this::noPendingScreenshots, () -> {
@@ -179,7 +216,14 @@ final class Scenario {
 				// Pedestals.
 				"setblock -21 " + (FEET_Y + 5) + " 30 diamond_block",
 				"setblock 6 " + FEET_Y + " 12 gold_block",
-				"setblock 16 " + FEET_Y + " 62 lapis_block")) {
+				"setblock 16 " + FEET_Y + " 62 lapis_block",
+				// Clump props behind the spawn: a smooth-stone floor patch, oak-plank stairs with an L foot,
+				// and a stone pillar to view them from.
+				"fill -6 " + SURFACE_Y + " -9 -3 " + SURFACE_Y + " -7 smooth_stone",
+				"fill 2 " + FEET_Y + " -9 2 " + FEET_Y + " -6 oak_planks",
+				"fill 3 " + FEET_Y + " -9 3 " + (FEET_Y + 1) + " -8 oak_planks",
+				"fill 4 " + FEET_Y + " -9 4 " + (FEET_Y + 2) + " -8 oak_planks",
+				"fill -1 " + FEET_Y + " -1 -1 " + (FEET_Y + 2) + " -1 stone")) {
 			command(cmd);
 		}
 	}
@@ -226,6 +270,117 @@ final class Scenario {
 		wm.select(beaconBlock.id);
 		wm.markDirty();
 		DevtestClient.log("created " + wm.all().size() + " waypoints in " + dim.identifier());
+	}
+
+	/**
+	 * Builds the two clumps through the N key's handler: {@code press} on the first block (creates the waypoint),
+	 * {@code extend} once per further block (as each held tick does), then {@code release}.
+	 */
+	private void createClumps() {
+		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
+		List<BlockPos> floor = new ArrayList<>();
+		for (int z = -9; z <= -7; z++) {
+			for (int x = -6; x <= -3; x++) floor.add(new BlockPos(x, SURFACE_Y, z));
+		}
+		floorPatch = holdOver(keys, floor);
+		floorPatch.setName("Floor Patch");
+		floorPatch.color = 0x169C9C; // cyan
+		floorPatch.style = WaypointStyle.BLOCK_HIGHLIGHT;
+		floorPatch.throughBlocks = false;
+		floorPatch.highlightOpacity = 0.35f;
+
+		List<BlockPos> stairs = new ArrayList<>();
+		// L foot first (toward the viewer), then the steps, bottom to top.
+		stairs.add(new BlockPos(2, FEET_Y, -6));
+		stairs.add(new BlockPos(2, FEET_Y, -7));
+		for (int z = -8; z >= -9; z--) {
+			for (int x = 2; x <= 4; x++) {
+				for (int y = FEET_Y; y <= FEET_Y + (x - 2); y++) stairs.add(new BlockPos(x, y, z));
+			}
+		}
+		stairStack = holdOver(keys, stairs);
+		stairStack.setName("Stair Stack");
+		stairStack.color = 0xF38BAA; // pink
+		stairStack.style = WaypointStyle.BEACON;
+
+		WaypointManager.get().select(beaconBlock.id);
+		WaypointManager.get().markDirty();
+		check(floorPatch.size() == 12, "Floor Patch has " + floorPatch.size() + " blocks, expected 12");
+		check(stairStack.size() == 14, "Stair Stack has " + stairStack.size() + " blocks, expected 14");
+		check(floorPatch.logoBlock.toString().equals("minecraft:smooth_stone"), "Floor Patch logo is " + floorPatch.logoBlock);
+		DevtestClient.log("clumps: Floor Patch " + floorPatch.size() + " blocks (centre " + floorPatch.centre() + ", beam "
+				+ floorPatch.beamBlock() + "), Stair Stack " + stairStack.size() + " blocks (top y " + stairStack.topY()
+				+ ", beam " + stairStack.beamBlock() + " from y " + (stairStack.beamColumnTopY() + 1) + ")");
+	}
+
+	/** Simulates pressing N on the first block and holding it while the target moves over the others. */
+	private Waypoint holdOver(CreateKeyHandler keys, List<BlockPos> targets) {
+		Waypoint w = keys.press(mc, targets.getFirst(), false);
+		check(w != null, "press on a free block " + targets.getFirst() + " did not create a waypoint");
+		for (BlockPos pos : targets.subList(1, targets.size())) keys.extend(mc, pos);
+		keys.release(mc);
+		return w;
+	}
+
+	/** The N key's delete toggle, and the hold rules (skip other waypoints, cap, no adding after a delete). */
+	private void checkKeyRules() {
+		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
+		WaypointManager wm = WaypointManager.get();
+		var dim = mc.level.dimension();
+
+		// A clump held over blocks of other waypoints skips them silently.
+		Waypoint temp = keys.press(mc, new BlockPos(-10, SURFACE_Y, -12), false);
+		check(temp != null, "press did not create the temporary clump");
+		keys.extend(mc, new BlockPos(-9, SURFACE_Y, -12));
+		keys.extend(mc, new BlockPos(-6, SURFACE_Y, -9)); // Floor Patch
+		keys.extend(mc, new BlockPos(-8, SURFACE_Y, -12));
+		check(temp.size() == 3, "temp clump has " + temp.size() + " blocks, expected 3 (Floor Patch block skipped)");
+		check(wm.waypointAt(new BlockPos(-6, SURFACE_Y, -9), dim) == floorPatch, "Floor Patch block was taken over");
+		// Cap at 256 blocks.
+		for (int i = 0; i < 300; i++) keys.extend(mc, new BlockPos(-14 + i % 10, SURFACE_Y - 1 - i / 10, -14));
+		check(temp.size() == Waypoint.MAX_BLOCKS, "temp clump has " + temp.size() + " blocks, expected the cap " + Waypoint.MAX_BLOCKS);
+		keys.release(mc);
+
+		// N on one block of the clump (not its anchor) deletes the whole clump.
+		int before = wm.all().size();
+		BlockPos target = temp.blocks().get(2);
+		Waypoint created = keys.press(mc, target, false);
+		check(created == null, "N on a clump block created a waypoint");
+		check(wm.byId(temp.id).isEmpty(), "N on a clump block did not remove the clump");
+		check(wm.all().size() == before - 1, "expected exactly one waypoint removed");
+		for (BlockPos pos : List.of(new BlockPos(-10, SURFACE_Y, -12), target)) {
+			check(wm.waypointAt(pos, dim) == null, "index still has " + pos + " after the delete");
+		}
+		// Holding on after the delete adds nothing.
+		keys.extend(mc, new BlockPos(-10, SURFACE_Y, -13));
+		check(wm.all().size() == before - 1 && wm.waypointAt(new BlockPos(-10, SURFACE_Y, -13), dim) == null,
+				"holding N after a delete added a block");
+		keys.release(mc);
+		check(!keys.isHolding(), "hold not ended by release");
+		DevtestClient.log("N-toggle delete: waypoint \"" + temp.name + "\" (" + temp.size() + " blocks) removed via block " + target
+				+ "; hold after delete added nothing; other-waypoint block skipped; cap " + Waypoint.MAX_BLOCKS + " enforced");
+
+		// Persistence: the clump blocks are written as [x, y, z] arrays.
+		wm.save();
+		try {
+			java.nio.file.Path file = mc.gameDirectory.toPath().resolve("waypy").resolve(wm.worldKey() + ".json");
+			String json = java.nio.file.Files.readString(file);
+			var root = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+			int found = -1;
+			for (var el : root.getAsJsonArray("waypoints")) {
+				var o = el.getAsJsonObject();
+				if (o.get("id").getAsString().equals(stairStack.id.toString())) found = o.getAsJsonArray("blocks").size();
+			}
+			check(found == stairStack.size(), "saved Stair Stack has " + found + " blocks");
+			check(json.contains("\"blocks\": [\n"), "blocks array not in the expected compact format");
+			DevtestClient.log("saved " + file.getFileName() + ": Stair Stack blocks=" + found);
+		} catch (java.io.IOException e) {
+			throw new IllegalStateException("could not read the waypoint file", e);
+		}
+	}
+
+	private static void check(boolean condition, String message) {
+		if (!condition) throw new IllegalStateException("check failed: " + message);
 	}
 
 	/** Resets the live config to the defaults, applies {@code change} and saves it to config/waypy.json. */

@@ -38,6 +38,8 @@ public final class WaypyClient implements ClientModInitializer {
 
 	public static KeyMapping createKey;
 	public static KeyMapping menuKey;
+	/** N key behaviour: create, hold to grow a clump, press on a waypoint to delete it. */
+	public static final CreateKeyHandler CREATE_KEY_HANDLER = new CreateKeyHandler();
 
 	@Override
 	public void onInitializeClient() {
@@ -55,9 +57,7 @@ public final class WaypyClient implements ClientModInitializer {
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			manager.tick();
-			while (createKey.consumeClick()) {
-				createWaypoint(client);
-			}
+			CREATE_KEY_HANDLER.tick(client);
 			while (menuKey.consumeClick()) {
 				if (client.player != null && client.gui.screen() == null) {
 					client.gui.setScreen(new WaypointScreen(manager.selected().orElse(null)));
@@ -68,23 +68,25 @@ public final class WaypyClient implements ClientModInitializer {
 		WaypointRenderer.init();
 	}
 
-	/** N: waypoint at the block under the player; Shift+N: at the block the camera looks at. */
-	private static void createWaypoint(Minecraft client) {
-		createWaypoint(client, client.hasShiftDown());
-	}
-
 	/**
 	 * Creates a waypoint at the block the player stands on ({@code lookedAt == false}) or at the block the
-	 * camera looks at, selects it and shows the action-bar message. Shared by the N key and the menu's
-	 * "+ New here" button.
+	 * camera looks at, selects it and shows the action-bar message. Used by the menu's "+ New here" button.
 	 *
 	 * @return the new waypoint, or null if there is no player/level or no block was found
 	 */
 	public static @Nullable Waypoint createWaypoint(Minecraft client, boolean lookedAt) {
 		if (client.player == null || client.level == null) return null;
-		BlockPos pos = lookedAt ? findLookedAtBlock(client) : findBlockBelow(client);
+		BlockPos pos = lookedAt ? findLookedAtBlock(client, true) : findBlockBelow(client, true);
 		if (pos == null) return null;
+		return createWaypointAt(client, pos);
+	}
 
+	/**
+	 * Creates a waypoint on {@code pos} with the default settings (logo = the block's item), selects it and shows
+	 * {@code Waypoint "<name>" created}. Shared by the N key and the menu's "+ New here".
+	 */
+	public static @Nullable Waypoint createWaypointAt(Minecraft client, BlockPos pos) {
+		if (client.player == null || client.level == null) return null;
 		Item item = client.level.getBlockState(pos).getBlock().asItem();
 		Identifier logo = item == Items.AIR ? WaypointManager.DEFAULT_LOGO : BuiltInRegistries.ITEM.getKey(item);
 
@@ -95,24 +97,32 @@ public final class WaypyClient implements ClientModInitializer {
 		return waypoint;
 	}
 
-	/** Block the player stands on, or the first non-air block straight below (down to min build height). */
-	public static @Nullable BlockPos findBlockBelow(Minecraft client) {
+	/**
+	 * Block the player stands on, or the first non-air block straight below (down to min build height).
+	 *
+	 * @param report show {@code No block below you} when there is none
+	 */
+	public static @Nullable BlockPos findBlockBelow(Minecraft client, boolean report) {
 		BlockPos.MutableBlockPos cursor = client.player.getOnPos().mutable();
 		int minY = client.level.getMinY();
 		while (cursor.getY() >= minY) {
 			if (!client.level.getBlockState(cursor).isAir()) return cursor.immutable();
 			cursor.move(Direction.DOWN);
 		}
-		client.player.sendOverlayMessage(Component.translatable("waypy.message.no_block_below"));
+		if (report) client.player.sendOverlayMessage(Component.translatable("waypy.message.no_block_below"));
 		return null;
 	}
 
-	/** Raycast from the camera up to {@link #MAX_RAYCAST_DISTANCE} blocks, ignoring fluids. */
-	public static @Nullable BlockPos findLookedAtBlock(Minecraft client) {
+	/**
+	 * Raycast from the camera up to {@link #MAX_RAYCAST_DISTANCE} blocks, ignoring fluids.
+	 *
+	 * @param report show {@code No block in sight} on a miss
+	 */
+	public static @Nullable BlockPos findLookedAtBlock(Minecraft client, boolean report) {
 		Entity camera = client.getCameraEntity() != null ? client.getCameraEntity() : client.player;
 		HitResult hit = camera.pick(MAX_RAYCAST_DISTANCE, 1.0f, false);
 		if (!(hit instanceof BlockHitResult blockHit) || hit.getType() != HitResult.Type.BLOCK) {
-			client.player.sendOverlayMessage(Component.translatable("waypy.message.no_block"));
+			if (report) client.player.sendOverlayMessage(Component.translatable("waypy.message.no_block"));
 			return null;
 		}
 		return blockHit.getBlockPos();

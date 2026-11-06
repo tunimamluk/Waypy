@@ -9,9 +9,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -22,6 +25,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +53,8 @@ import net.minecraft.world.level.storage.LevelResource;
  *
  * <p>All public methods are synchronized; list getters return immutable snapshots, but the
  * {@link Waypoint} objects themselves are live and may be mutated (then call {@link #markDirty()}).
+ * Blocks are added to a waypoint only through {@link #addBlock}, which keeps the per-dimension block index
+ * ({@link #waypointAt}) in sync.
  */
 public final class WaypointManager {
 	private static final Logger LOGGER = LoggerFactory.getLogger("waypy");
@@ -71,6 +77,8 @@ public final class WaypointManager {
 	}
 
 	private final List<Waypoint> waypoints = new ArrayList<>();
+	/** Per dimension: block -> the (first) waypoint containing it. Kept in sync on add, remove, load and block-add. */
+	private final Map<ResourceKey<Level>, Map<BlockPos, Waypoint>> blockIndex = new HashMap<>();
 	private @Nullable UUID selectedId;
 	private @Nullable String worldKey;
 	private int colorCursor;
@@ -114,6 +122,12 @@ public final class WaypointManager {
 		return Optional.empty();
 	}
 
+	/** The waypoint (single block or clump) containing {@code pos} in {@code dimension}, or null. O(1). */
+	public synchronized @Nullable Waypoint waypointAt(BlockPos pos, ResourceKey<Level> dimension) {
+		Map<BlockPos, Waypoint> index = blockIndex.get(dimension);
+		return index == null ? null : index.get(pos);
+	}
+
 	public synchronized Optional<Waypoint> selected() {
 		return selectedId == null ? Optional.empty() : byId(selectedId);
 	}
@@ -130,14 +144,59 @@ public final class WaypointManager {
 		Waypoint w = new Waypoint(UUID.randomUUID(), nextFreeName(), pos.immutable(), dimension,
 				PALETTE[Math.floorMod(colorCursor++, PALETTE.length)], logoBlock != null ? logoBlock : DEFAULT_LOGO);
 		waypoints.add(w);
+		index(w);
 		markDirty();
 		return w;
 	}
 
 	public synchronized void remove(UUID id) {
-		if (waypoints.removeIf(w -> w.id.equals(id))) {
+		Optional<Waypoint> removed = byId(id);
+		if (removed.isPresent() && waypoints.remove(removed.get())) {
 			if (id.equals(selectedId)) selectedId = null;
+			reindex(removed.get().dimension);
 			markDirty();
+		}
+	}
+
+	/** Result of {@link #addBlock}. */
+	public enum AddBlockResult {
+		ADDED,
+		/** Already one of this waypoint's blocks. */
+		ALREADY_IN_WAYPOINT,
+		/** Belongs to another waypoint in the same dimension. */
+		IN_OTHER_WAYPOINT,
+		/** The waypoint already has {@link Waypoint#MAX_BLOCKS} blocks. */
+		LIMIT_REACHED,
+		/** The waypoint is not managed (e.g. it was removed). */
+		UNKNOWN_WAYPOINT
+	}
+
+	/**
+	 * Adds {@code pos} to the waypoint (making it a clump), unless the block is already in it or in another waypoint
+	 * of the same dimension, or the waypoint is full. Marks the manager dirty when the block was added.
+	 */
+	public synchronized AddBlockResult addBlock(Waypoint waypoint, BlockPos pos) {
+		if (!waypoints.contains(waypoint)) return AddBlockResult.UNKNOWN_WAYPOINT;
+		if (waypoint.contains(pos)) return AddBlockResult.ALREADY_IN_WAYPOINT;
+		Map<BlockPos, Waypoint> index = blockIndex.computeIfAbsent(waypoint.dimension, d -> new HashMap<>());
+		if (index.containsKey(pos)) return AddBlockResult.IN_OTHER_WAYPOINT;
+		if (waypoint.size() >= Waypoint.MAX_BLOCKS) return AddBlockResult.LIMIT_REACHED;
+		if (!waypoint.addBlockInternal(pos)) return AddBlockResult.LIMIT_REACHED;
+		index.put(pos.immutable(), waypoint);
+		markDirty();
+		return AddBlockResult.ADDED;
+	}
+
+	private void index(Waypoint w) {
+		Map<BlockPos, Waypoint> index = blockIndex.computeIfAbsent(w.dimension, d -> new HashMap<>());
+		for (BlockPos pos : w.blocks()) index.putIfAbsent(pos, w);
+	}
+
+	/** Rebuilds one dimension's index (after a removal: another waypoint may share a block from an old file). */
+	private void reindex(ResourceKey<Level> dimension) {
+		blockIndex.remove(dimension);
+		for (Waypoint w : waypoints) {
+			if (w.dimension.equals(dimension)) index(w);
 		}
 	}
 
@@ -183,6 +242,7 @@ public final class WaypointManager {
 
 	private void clear() {
 		waypoints.clear();
+		blockIndex.clear();
 		selectedId = null;
 		colorCursor = 0;
 		dirty = false;
@@ -218,7 +278,9 @@ public final class WaypointManager {
 			Files.createDirectories(file.getParent());
 			Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
 			try (Writer out = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
-				GSON.toJson(root, out);
+				StringBuilder json = new StringBuilder();
+				writeJson(root, json, "");
+				out.write(json.append('\n').toString());
 			}
 			try {
 				Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
@@ -250,7 +312,10 @@ public final class WaypointManager {
 			for (JsonElement el : root.getAsJsonArray("waypoints")) {
 				try {
 					Waypoint w = fromJson(el.getAsJsonObject());
-					if (seen.add(w.id)) waypoints.add(w);
+					if (seen.add(w.id)) {
+						waypoints.add(w);
+						index(w);
+					}
 				} catch (Exception e) {
 					LOGGER.warn("[Waypy] Skipping invalid waypoint entry in {}: {}", file, el, e);
 				}
@@ -282,9 +347,20 @@ public final class WaypointManager {
 		JsonObject o = new JsonObject();
 		o.addProperty("id", w.id.toString());
 		o.addProperty("name", w.name);
-		o.addProperty("x", w.pos.getX());
-		o.addProperty("y", w.pos.getY());
-		o.addProperty("z", w.pos.getZ());
+		// x/y/z: the anchor (first block), so older Waypy versions still load the waypoint as a single block.
+		BlockPos anchor = w.anchor();
+		o.addProperty("x", anchor.getX());
+		o.addProperty("y", anchor.getY());
+		o.addProperty("z", anchor.getZ());
+		JsonArray blocks = new JsonArray();
+		for (BlockPos pos : w.blocks()) {
+			JsonArray xyz = new JsonArray(3);
+			xyz.add(pos.getX());
+			xyz.add(pos.getY());
+			xyz.add(pos.getZ());
+			blocks.add(xyz);
+		}
+		o.add("blocks", blocks);
 		o.addProperty("dimension", w.dimension.identifier().toString());
 		o.addProperty("color", String.format(Locale.ROOT, "#%06X", w.color & 0xFFFFFF));
 		o.addProperty("style", w.style.name());
@@ -298,7 +374,7 @@ public final class WaypointManager {
 
 	private static Waypoint fromJson(JsonObject o) {
 		UUID id = UUID.fromString(o.get("id").getAsString());
-		BlockPos pos = new BlockPos(o.get("x").getAsInt(), o.get("y").getAsInt(), o.get("z").getAsInt());
+		List<BlockPos> blocks = parseBlocks(o);
 		ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, Identifier.parse(o.get("dimension").getAsString()));
 		int color = parseColor(o.get("color"));
 		Identifier logo = DEFAULT_LOGO;
@@ -308,7 +384,7 @@ public final class WaypointManager {
 		}
 		String name = o.has("name") ? o.get("name").getAsString() : "Waypoint";
 
-		Waypoint w = new Waypoint(id, name, pos, dim, color, logo);
+		Waypoint w = new Waypoint(id, name, blocks, dim, color, logo);
 		w.style = parseEnum(WaypointStyle.class, o, "style", WaypointStyle.BEACON);
 		// Migration: the removed TEXT logo (and any unknown value) loads as BLOCK, keeping the stored logoBlock;
 		// an old "logoText" field is ignored.
@@ -320,6 +396,86 @@ public final class WaypointManager {
 		if (o.has("throughBlocks")) w.throughBlocks = o.get("throughBlocks").getAsBoolean();
 		if (o.has("visible")) w.visible = o.get("visible").getAsBoolean();
 		return w;
+	}
+
+	/**
+	 * The {@code "blocks": [[x,y,z], ...]} list: invalid entries are skipped, duplicates dropped, at most
+	 * {@link Waypoint#MAX_BLOCKS} kept. Migration: files without (valid) blocks load the {@code x}/{@code y}/{@code z}
+	 * position as a single-block waypoint.
+	 */
+	private static List<BlockPos> parseBlocks(JsonObject o) {
+		Set<BlockPos> blocks = new LinkedHashSet<>();
+		JsonElement el = o.get("blocks");
+		if (el != null && el.isJsonArray()) {
+			for (JsonElement entry : el.getAsJsonArray()) {
+				if (blocks.size() >= Waypoint.MAX_BLOCKS) {
+					LOGGER.warn("[Waypy] Waypoint {} has more than {} blocks; extra blocks dropped", o.get("id"), Waypoint.MAX_BLOCKS);
+					break;
+				}
+				try {
+					JsonArray xyz = entry.getAsJsonArray();
+					if (xyz.size() != 3) continue;
+					blocks.add(new BlockPos(xyz.get(0).getAsInt(), xyz.get(1).getAsInt(), xyz.get(2).getAsInt()));
+				} catch (RuntimeException e) {
+					// not an [x,y,z] array of numbers: skip it
+				}
+			}
+		}
+		if (blocks.isEmpty()) {
+			blocks.add(new BlockPos(o.get("x").getAsInt(), o.get("y").getAsInt(), o.get("z").getAsInt()));
+		}
+		return new ArrayList<>(blocks);
+	}
+
+	/**
+	 * Pretty-prints like Gson's pretty printing (two-space indent), except that arrays holding only primitives
+	 * (the {@code [x, y, z]} block positions) stay on one line, so a 256-block clump isn't 1280 lines long.
+	 */
+	private static void writeJson(JsonElement el, StringBuilder out, String indent) {
+		if (el.isJsonObject()) {
+			JsonObject obj = el.getAsJsonObject();
+			if (obj.isEmpty()) {
+				out.append("{}");
+				return;
+			}
+			String inner = indent + "  ";
+			out.append("{\n");
+			boolean first = true;
+			for (Map.Entry<String, JsonElement> e : obj.entrySet()) {
+				if (!first) out.append(",\n");
+				first = false;
+				out.append(inner).append(GSON.toJson(new JsonPrimitive(e.getKey()))).append(": ");
+				writeJson(e.getValue(), out, inner);
+			}
+			out.append('\n').append(indent).append('}');
+		} else if (el.isJsonArray()) {
+			JsonArray arr = el.getAsJsonArray();
+			if (arr.isEmpty()) {
+				out.append("[]");
+				return;
+			}
+			boolean flat = true;
+			for (JsonElement e : arr) flat &= e.isJsonPrimitive() || e.isJsonNull();
+			if (flat) {
+				out.append('[');
+				for (int i = 0; i < arr.size(); i++) {
+					if (i > 0) out.append(", ");
+					out.append(GSON.toJson(arr.get(i)));
+				}
+				out.append(']');
+				return;
+			}
+			String inner = indent + "  ";
+			out.append("[\n");
+			for (int i = 0; i < arr.size(); i++) {
+				if (i > 0) out.append(",\n");
+				out.append(inner);
+				writeJson(arr.get(i), out, inner);
+			}
+			out.append('\n').append(indent).append(']');
+		} else {
+			out.append(GSON.toJson(el));
+		}
 	}
 
 	private static int parseColor(@Nullable JsonElement el) {

@@ -360,6 +360,9 @@ public class WaypointScreen extends Screen {
 				}
 				editorContent.addChild(visibleButton);
 			}
+			if (w.isClump()) {
+				editorContent.addChild(label(Component.translatable("waypy.gui.clump_info", w.size())), s -> s.paddingTop(2));
+			}
 		}
 
 		int top = layout.getHeaderHeight() + 4;
@@ -553,7 +556,13 @@ public class WaypointScreen extends Screen {
 				int textX = x + 16 + 4;
 				int maxWidth = getContentRight() - textX;
 				graphics.text(font, ellipsize(font, waypoint.name, maxWidth), textX, y + 1, waypoint.visible ? 0xFFFFFFFF : GRAY);
-				graphics.text(font, ellipsize(font, distanceText().getString(), maxWidth), textX, y + 11, GRAY);
+				graphics.text(font, ellipsize(font, detailText().getString(), maxWidth), textX, y + 11, GRAY);
+			}
+
+			/** Distance (or dimension), plus the block count for clumps: {@code 24m · 12 blocks}. */
+			private Component detailText() {
+				Component distance = distanceText();
+				return waypoint.isClump() ? Component.translatable("waypy.gui.block_count", distance, waypoint.size()) : distance;
 			}
 
 			private Component distanceText() {
@@ -561,7 +570,7 @@ public class WaypointScreen extends Screen {
 				if (player == null || !player.level().dimension().equals(waypoint.dimension)) {
 					return Component.literal(waypoint.dimension.identifier().toString());
 				}
-				long metres = Math.round(Math.sqrt(waypoint.pos.distToCenterSqr(player.position())));
+				long metres = Math.round(waypoint.centre().distanceTo(player.position()));
 				return Component.translatable("waypy.gui.distance", metres);
 			}
 

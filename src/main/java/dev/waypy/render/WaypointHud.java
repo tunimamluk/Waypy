@@ -22,7 +22,6 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.renderer.state.GameRenderState;
 import net.minecraft.client.renderer.state.level.CameraEntityRenderState;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
-import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
@@ -129,11 +128,12 @@ final class WaypointHud implements HudElement {
 
 		List<Marker> markers = new ArrayList<>(waypoints.size());
 		for (Waypoint waypoint : waypoints) {
-			BlockPos pos = waypoint.pos;
+			// Above the clump: x/z of the centroid, y over the top face of its highest block.
+			Vec3 centre = waypoint.centre();
 			double height = waypoint.style == WaypointStyle.BEACON ? BEACON_LOGO_HEIGHT : HIGHLIGHT_LOGO_HEIGHT;
-			double ax = pos.getX() + 0.5 - cam.x;
-			double ay = pos.getY() + 1.0 + height - cam.y;
-			double az = pos.getZ() + 0.5 - cam.z;
+			double ax = centre.x - cam.x;
+			double ay = waypoint.topY() + 1.0 + height - cam.y;
+			double az = centre.z - cam.z;
 			clip.set((float) ax, (float) ay, (float) az, 1.0f);
 			viewProjection.transform(clip);
 			if (clip.w < MIN_CLIP_W) continue; // behind the camera
@@ -144,7 +144,7 @@ final class WaypointHud implements HudElement {
 			// Snap to whole framebuffer pixels so text and icons stay crisp.
 			float x = snap((ndcX * 0.5f + 0.5f) * guiWidth, guiScale);
 			float y = snap((0.5f - ndcY * 0.5f) * guiHeight, guiScale);
-			double distance = Vec3.atCenterOf(pos).distanceTo(cam);
+			double distance = centre.distanceTo(cam);
 			float scale = distanceScale(distance, config.shrinkWithDistance, minSize) * iconSize;
 			// The logo scale is a multiple of 1/16 framebuffer pixel per 16-px icon, so the icon covers whole pixels;
 			// the label scale maps each font texel to a whole number of framebuffer pixels, so text stays crisp.
