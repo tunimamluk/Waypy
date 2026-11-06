@@ -27,7 +27,7 @@ public final class Waypoint {
     WaypointStyle style;         // BEACON | BLOCK_HIGHLIGHT
     LogoType logoType;           // BLOCK | TEXT
     Identifier logoBlock;        // item/block id used when logoType == BLOCK
-    String logoText;             // max 3 chars, used when logoType == TEXT
+    String logoText;             // max 8 chars, used when logoType == TEXT
     float highlightOpacity;      // 0..1, BLOCK_HIGHLIGHT only
     boolean throughBlocks;       // BLOCK_HIGHLIGHT only: render without depth test
     boolean visible;
@@ -67,7 +67,7 @@ Use only vanilla widgets and textures: `Button`, `EditBox`, `AbstractSliderButto
   - Style `CycleButton`: Beacon / Block Selection.
   - Logo `CycleButton`: Block / Text.
     - Block → a button showing the current block icon, which opens `BlockPickerScreen`.
-    - Text → a 3-char `EditBox`.
+    - Text → an 8-char `EditBox`.
   - If Block Selection is the style: an Opacity slider (0–100%) and a "Render through blocks" `Checkbox`.
   - A "Visible" toggle.
 - Footer: `Done`.
