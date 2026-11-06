@@ -1,0 +1,19 @@
+{
+	"schemaVersion": 1,
+	"id": "waypy",
+	"version": "${version}",
+	"name": "Waypy",
+	"description": "Client-side waypoints with beacon beams, block highlights and logos.",
+	"authors": ["Waypy"],
+	"license": "MIT",
+	"environment": "client",
+	"entrypoints": {
+		"client": ["dev.waypy.WaypyClient"]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
