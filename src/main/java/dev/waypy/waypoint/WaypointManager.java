@@ -8,7 +8,10 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.Iterator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -18,6 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -39,6 +43,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.util.Util;
 import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.LevelResource;
@@ -53,8 +58,13 @@ import net.minecraft.world.level.storage.LevelResource;
  *
  * <p>All public methods are synchronized; list getters return immutable snapshots, but the
  * {@link Waypoint} objects themselves are live and may be mutated (then call {@link #markDirty()}).
- * Blocks are added to a waypoint only through {@link #addBlock}, which keeps the per-dimension block index
- * ({@link #waypointAt}) in sync.
+ * Blocks are added to a waypoint only through {@link #addBlock} and moved only through {@link #move}, which keep the
+ * per-dimension block index ({@link #waypointAt}) in sync.
+ *
+ * <p><b>Undo:</b> {@link #remove} does not discard a waypoint at once. It leaves the world, the list and the index
+ * immediately, but stays restorable for {@link #UNDO_WINDOW_MILLIS} (real time) in a small "recently deleted" stack
+ * ({@link #restore}, {@link #restoreDeletedAt}). Pending deletions are never saved (the file is written without them)
+ * and become permanent when they expire, on disconnect and on world change.
  */
 public final class WaypointManager {
 	private static final Logger LOGGER = LoggerFactory.getLogger("waypy");
@@ -64,6 +74,10 @@ public final class WaypointManager {
 	/** Ticks between a {@link #markDirty()} and the automatic save. */
 	private static final int SAVE_DELAY_TICKS = 20;
 	public static final Identifier DEFAULT_LOGO = Identifier.withDefaultNamespace("compass");
+	/** How long a deleted waypoint can be restored, in milliseconds of real time. */
+	public static final long UNDO_WINDOW_MILLIS = 15_000L;
+	/** Most deletions kept restorable at once (older ones become permanent early). */
+	private static final int MAX_PENDING_DELETIONS = 8;
 
 	/** Palette new waypoints cycle through: the 16 vanilla dye colors. */
 	private static final int[] PALETTE;
@@ -79,6 +93,9 @@ public final class WaypointManager {
 	private final List<Waypoint> waypoints = new ArrayList<>();
 	/** Per dimension: block -> the (first) waypoint containing it. Kept in sync on add, remove, load and block-add. */
 	private final Map<ResourceKey<Level>, Map<BlockPos, Waypoint>> blockIndex = new HashMap<>();
+	/** Recently deleted waypoints, newest first; each restorable until {@link #UNDO_WINDOW_MILLIS} after its deletion. */
+	private final Deque<DeletedWaypoint> recentlyDeleted = new ArrayDeque<>();
+	private final LongSupplier clock = Util::getMillis;
 	private @Nullable UUID selectedId;
 	private @Nullable String worldKey;
 	private int colorCursor;
@@ -149,13 +166,150 @@ public final class WaypointManager {
 		return w;
 	}
 
+	/**
+	 * Removes the waypoint from the world, the list and the index. It stays restorable ({@link #restore},
+	 * {@link #restoreDeletedAt}) for {@link #UNDO_WINDOW_MILLIS}.
+	 */
 	public synchronized void remove(UUID id) {
 		Optional<Waypoint> removed = byId(id);
-		if (removed.isPresent() && waypoints.remove(removed.get())) {
-			if (id.equals(selectedId)) selectedId = null;
-			reindex(removed.get().dimension);
-			markDirty();
+		if (removed.isEmpty()) return;
+		Waypoint w = removed.get();
+		int listIndex = waypoints.indexOf(w);
+		waypoints.remove(listIndex);
+		boolean wasSelected = id.equals(selectedId);
+		if (wasSelected) selectedId = null;
+		reindex(w.dimension);
+		recentlyDeleted.addFirst(new DeletedWaypoint(w, listIndex, wasSelected, clock.getAsLong()));
+		while (recentlyDeleted.size() > MAX_PENDING_DELETIONS) recentlyDeleted.removeLast();
+		markDirty();
+	}
+
+	// ---------------------------------------------------------------- undo
+
+	/** A deleted waypoint that can still be restored: the waypoint itself (id, fields and blocks unchanged). */
+	public record DeletedWaypoint(Waypoint waypoint, int listIndex, boolean wasSelected, long deletedAtMillis) {
+	}
+
+	/** The most recent deletion that has not expired yet. */
+	public synchronized Optional<DeletedWaypoint> lastDeleted() {
+		expireDeletions(false);
+		return Optional.ofNullable(recentlyDeleted.peekFirst());
+	}
+
+	/** Milliseconds left to restore {@code deleted} (0 when expired). */
+	public synchronized long remainingUndoMillis(DeletedWaypoint deleted) {
+		return Math.max(0L, deleted.deletedAtMillis() + UNDO_WINDOW_MILLIS - clock.getAsLong());
+	}
+
+	/** True if the deletion is pending and none of its blocks has since been claimed by another waypoint. */
+	public synchronized boolean canRestore(DeletedWaypoint deleted) {
+		expireDeletions(false);
+		if (!recentlyDeleted.contains(deleted)) return false;
+		Map<BlockPos, Waypoint> index = blockIndex.get(deleted.waypoint().dimension);
+		if (index == null) return true;
+		for (BlockPos pos : deleted.waypoint().blocks()) {
+			if (index.containsKey(pos)) return false;
 		}
+		return true;
+	}
+
+	/**
+	 * Restores the pending deletion of the waypoint with this id, with the same id, fields and blocks, at its old place
+	 * in the list (and selected again if it was selected). Null if it is not pending (expired, never deleted) or one of
+	 * its blocks now belongs to another waypoint.
+	 */
+	public synchronized @Nullable Waypoint restore(UUID id) {
+		expireDeletions(false);
+		for (DeletedWaypoint deleted : recentlyDeleted) {
+			if (deleted.waypoint().id.equals(id)) return canRestore(deleted) ? restore(deleted) : null;
+		}
+		return null;
+	}
+
+	/**
+	 * The N key's undo: restores the newest pending deletion in {@code dimension} that had a block at {@code pos} and
+	 * whose blocks are all still free. Null if there is none (then the press is handled normally).
+	 */
+	public synchronized @Nullable Waypoint restoreDeletedAt(BlockPos pos, ResourceKey<Level> dimension) {
+		expireDeletions(false);
+		for (DeletedWaypoint deleted : recentlyDeleted) {
+			Waypoint w = deleted.waypoint();
+			if (w.dimension.equals(dimension) && w.contains(pos) && canRestore(deleted)) return restore(deleted);
+		}
+		return null;
+	}
+
+	private Waypoint restore(DeletedWaypoint deleted) {
+		recentlyDeleted.remove(deleted);
+		Waypoint w = deleted.waypoint();
+		waypoints.add(Math.min(deleted.listIndex(), waypoints.size()), w);
+		index(w);
+		if (deleted.wasSelected() && selectedId == null) selectedId = w.id;
+		markDirty();
+		return w;
+	}
+
+	/**
+	 * Makes deletions permanent: the expired ones, or with {@code all} every pending one (world change, disconnect;
+	 * the devtest uses it to force expiry).
+	 */
+	public synchronized void expireDeletions(boolean all) {
+		if (all) {
+			recentlyDeleted.clear();
+			return;
+		}
+		long now = clock.getAsLong();
+		Iterator<DeletedWaypoint> it = recentlyDeleted.iterator();
+		while (it.hasNext()) {
+			if (now - it.next().deletedAtMillis() >= UNDO_WINDOW_MILLIS) it.remove();
+		}
+	}
+
+	// ---------------------------------------------------------------- move
+
+	/** Result of {@link #move}: what happened and, for {@link Status#OVERLAP}, the waypoint in the way. */
+	public record MoveResult(Status status, @Nullable Waypoint blocker) {
+		public enum Status {
+			MOVED,
+			/** The new anchor is the current one. */
+			UNCHANGED,
+			/** A block would land on a block of another waypoint in the same dimension; nothing was moved. */
+			OVERLAP,
+			/** The waypoint is not managed (e.g. it was removed). */
+			UNKNOWN_WAYPOINT
+		}
+	}
+
+	/**
+	 * Moves the waypoint so its anchor (first block) is at {@code newAnchor}: every block is translated by the same
+	 * delta, so a clump keeps its shape. Refused (nothing changes) if a moved block would overlap a block of another
+	 * waypoint in the same dimension. Keeps the index in sync, bumps the waypoint's version and marks the manager dirty.
+	 */
+	public synchronized MoveResult move(Waypoint waypoint, BlockPos newAnchor) {
+		if (!waypoints.contains(waypoint)) return new MoveResult(MoveResult.Status.UNKNOWN_WAYPOINT, null);
+		BlockPos anchor = waypoint.anchor();
+		int dx = newAnchor.getX() - anchor.getX();
+		int dy = newAnchor.getY() - anchor.getY();
+		int dz = newAnchor.getZ() - anchor.getZ();
+		if (dx == 0 && dy == 0 && dz == 0) return new MoveResult(MoveResult.Status.UNCHANGED, null);
+		Waypoint blocker = moveBlocker(waypoint, dx, dy, dz);
+		if (blocker != null) return new MoveResult(MoveResult.Status.OVERLAP, blocker);
+		waypoint.translateInternal(dx, dy, dz);
+		reindex(waypoint.dimension);
+		markDirty();
+		return new MoveResult(MoveResult.Status.MOVED, null);
+	}
+
+	/** The first other waypoint of the same dimension that has a block where a moved block would land, or null. */
+	private @Nullable Waypoint moveBlocker(Waypoint waypoint, int dx, int dy, int dz) {
+		BlockPos.MutableBlockPos moved = new BlockPos.MutableBlockPos();
+		for (Waypoint other : waypoints) {
+			if (other == waypoint || !other.dimension.equals(waypoint.dimension)) continue;
+			for (BlockPos pos : waypoint.blocks()) {
+				if (other.contains(moved.setWithOffset(pos, dx, dy, dz))) return other;
+			}
+		}
+		return null;
 	}
 
 	/** Result of {@link #addBlock}. */
@@ -183,6 +337,8 @@ public final class WaypointManager {
 		if (waypoint.size() >= Waypoint.MAX_BLOCKS) return AddBlockResult.LIMIT_REACHED;
 		if (!waypoint.addBlockInternal(pos)) return AddBlockResult.LIMIT_REACHED;
 		index.put(pos.immutable(), waypoint);
+		// A clump is never a beacon: it becomes Block Selection the moment it grows to two blocks.
+		if (waypoint.style == WaypointStyle.BEACON) waypoint.style = WaypointStyle.BLOCK_HIGHLIGHT;
 		markDirty();
 		return AddBlockResult.ADDED;
 	}
@@ -215,8 +371,9 @@ public final class WaypointManager {
 		dirtyTicks = 0;
 	}
 
-	/** Called every client tick; flushes debounced changes. */
+	/** Called every client tick; flushes debounced changes and expires old deletions. */
 	public synchronized void tick() {
+		expireDeletions(false);
 		if (dirty && ++dirtyTicks >= SAVE_DELAY_TICKS) {
 			save();
 		}
@@ -241,6 +398,7 @@ public final class WaypointManager {
 	}
 
 	private void clear() {
+		recentlyDeleted.clear(); // pending deletions become permanent
 		waypoints.clear();
 		blockIndex.clear();
 		selectedId = null;
@@ -308,10 +466,16 @@ public final class WaypointManager {
 		}
 
 		Set<UUID> seen = new HashSet<>();
+		boolean migrated = false;
 		if (root.has("waypoints") && root.get("waypoints").isJsonArray()) {
 			for (JsonElement el : root.getAsJsonArray("waypoints")) {
 				try {
 					Waypoint w = fromJson(el.getAsJsonObject());
+					if (w.isClump() && w.style == WaypointStyle.BEACON) {
+						// Migration: a clump can't be a beacon.
+						w.style = WaypointStyle.BLOCK_HIGHLIGHT;
+						migrated = true;
+					}
 					if (seen.add(w.id)) {
 						waypoints.add(w);
 						index(w);
@@ -331,6 +495,7 @@ public final class WaypointManager {
 		} catch (Exception e) {
 			LOGGER.warn("[Waypy] Ignoring invalid metadata in {}", file, e);
 		}
+		if (migrated) markDirty();
 	}
 
 	private static void backupCorrupt(Path file) {
@@ -369,6 +534,7 @@ public final class WaypointManager {
 		o.addProperty("highlightOpacity", w.highlightOpacity);
 		o.addProperty("throughBlocks", w.throughBlocks);
 		o.addProperty("visible", w.visible);
+		o.addProperty("showText", w.showText);
 		return o;
 	}
 
@@ -395,6 +561,8 @@ public final class WaypointManager {
 		}
 		if (o.has("throughBlocks")) w.throughBlocks = o.get("throughBlocks").getAsBoolean();
 		if (o.has("visible")) w.visible = o.get("visible").getAsBoolean();
+		// Migration: files written before the per-waypoint text toggle keep their labels.
+		w.showText = !o.has("showText") || o.get("showText").getAsBoolean();
 		return w;
 	}
 

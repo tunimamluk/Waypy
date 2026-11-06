@@ -33,7 +33,6 @@ import net.minecraft.world.phys.Vec3;
 import dev.waypy.config.WaypyConfig;
 import dev.waypy.waypoint.Waypoint;
 import dev.waypy.waypoint.WaypointManager;
-import dev.waypy.waypoint.WaypointStyle;
 
 /**
  * Submits the in-world geometry of waypoints (beacon beams and block highlights) from
@@ -95,7 +94,7 @@ final class WorldWaypointRenderer {
 
 		for (Waypoint waypoint : waypoints) {
 			if (distanceSqTo(waypoint, camera.pos) > cutoffSq) continue;
-			if (waypoint.style == WaypointStyle.BEACON) {
+			if (waypoint.isBeacon()) { // single block only: a clump is always a highlight
 				submitBeam(waypoint, level, camera, poseStack, collector, animationTime, scoping);
 			} else {
 				submitHighlight(minecraft, waypoint, camera, poseStack, collector, maxDistance);
@@ -107,11 +106,9 @@ final class WorldWaypointRenderer {
 
 	private static void submitBeam(Waypoint waypoint, ClientLevel level, CameraRenderState camera, PoseStack poseStack,
 			SubmitNodeCollector collector, float animationTime, boolean scoping) {
-		// One beam per waypoint, from the clump's beam block (nearest the centroid in XZ), starting on top of the
-		// highest clump block in that column (so a solid block doesn't hide its base) and ending at the build limit.
-		// Only the position is used, so the chunk need not be loaded.
-		BlockPos beam = waypoint.beamBlock();
-		BlockPos pos = new BlockPos(beam.getX(), waypoint.beamColumnTopY(), beam.getZ());
+		// From the top of the waypoint's (single) block up to the build limit. Only the position is used, so the chunk
+		// need not be loaded.
+		BlockPos pos = waypoint.anchor();
 		int beamBottom = pos.getY() + 1;
 		int beamTop = level.getMaxY() + 1;
 		int height = beamTop - beamBottom;

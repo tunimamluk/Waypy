@@ -9,12 +9,18 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.options.controls.KeyBindsList;
+import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.Identifier;
+import net.minecraft.util.Util;
 
 import dev.waypy.CreateKeyHandler;
 import dev.waypy.WaypyClient;
@@ -38,21 +44,24 @@ import dev.waypy.waypoint.WaypointStyle;
  *
  * <p>World layout (superflat, grass surface at y=-61, player feet at y=-60, camera facing south / +Z, so +X is
  * screen-left and -X is screen-right):
+ * Waypoints are created with the defaults (Block Selection, depth-tested, text off) and then configured; the ones
+ * marked "text" have {@code showText} on so the label rules and label smoothness stay covered.
  * <ul>
- *   <li>"Diamond Beacon": BEACON, BLOCK logo, red, on a diamond block on top of a hill, ~37 blocks away on the right.</li>
- *   <li>"Lapis Beacon": BEACON, BLOCK logo (lapis), light blue, on a lapis block ~64 blocks away on the left.</li>
- *   <li>"Hidden Cache": BLOCK_HIGHLIGHT, throughBlocks=true, lime, behind a stone-brick wall ~24 blocks ahead.</li>
- *   <li>"Gold Block": BLOCK_HIGHLIGHT, throughBlocks=false, logo NONE (label only), orange, on a gold block ~13 blocks ahead on the left.</li>
- *   <li>"Far Beacon": BEACON, BLOCK logo, purple, ~200 blocks ahead, far outside the render distance (its chunk is
- *       not loaded), to check that far beams are drawn without fog.</li>
+ *   <li>"Diamond Beacon": BEACON, BLOCK logo, red, text, on a diamond block on top of a hill, ~37 blocks away on the right.</li>
+ *   <li>"Lapis Beacon": BEACON, BLOCK logo (lapis), light blue, text, on a lapis block ~64 blocks away on the left.</li>
+ *   <li>"Hidden Cache": BLOCK_HIGHLIGHT, throughBlocks=true, lime, text, behind a stone-brick wall ~24 blocks ahead.</li>
+ *   <li>"Gold Block": BLOCK_HIGHLIGHT, throughBlocks=false, logo NONE (label only), orange, text, on a gold block ~13 blocks ahead on the left.</li>
+ *   <li>"Far Beacon": BEACON, BLOCK logo, purple, text OFF (logo only), ~200 blocks ahead, far outside the render
+ *       distance (its chunk is not loaded), to check that far beams are drawn without fog.</li>
  * </ul>
  * Clumps, behind the spawn (north, -Z), built through the N key's code path ({@link CreateKeyHandler}) and seen from
  * a stone pillar at (-1, -1) facing north (+X is screen-right):
  * <ul>
  *   <li>"Floor Patch": BLOCK_HIGHLIGHT, depth-tested, a flat 4×3 patch of smooth stone set into the ground.</li>
- *   <li>"Stair Stack": BEACON, oak-plank stairs (heights 1/2/3, two deep) with a two-block L foot; switched to
- *       BLOCK_HIGHLIGHT for the outline screenshots.</li>
+ *   <li>"Stair Stack": oak-plank stairs (heights 1/2/3, two deep) with a two-block L foot; set to BEACON right after
+ *       the press, so growing to two blocks must force it back to BLOCK_HIGHLIGHT (a clump can't be a beacon).</li>
  * </ul>
+ * "Walk Test" (east of the spawn, text on) is used alone for the walking-away (shrink smoothness) screenshots.
  */
 final class Scenario {
 	private static final int SURFACE_Y = -61; // top grass block of the default superflat
@@ -79,6 +88,11 @@ final class Scenario {
 	private Waypoint farBeacon;
 	private Waypoint floorPatch;
 	private Waypoint stairStack;
+	private Waypoint walkTest;
+	/** The waypoint deleted for the real-time undo expiry check, and when. */
+	private Waypoint expiryProbe;
+	private List<BlockPos> expiryProbeBlocks;
+	private long expiryProbeDeletedAt;
 
 	Scenario(Minecraft mc) {
 		this.mc = mc;
@@ -104,6 +118,9 @@ final class Scenario {
 		step("create waypoints", () -> mc.player != null && mc.level != null, this::createWaypoints, 20);
 		step("create clumps (N key path)", () -> true, this::createClumps, 5);
 		step("N-toggle delete and clump rules", () -> true, this::checkKeyRules, 5);
+		step("new waypoint defaults", () -> true, this::checkDefaults, 2);
+		step("undo via N, forced expiry", () -> true, this::checkUndo, 2);
+		step("start real-time undo expiry probe", () -> true, this::startExpiryProbe, 2);
 		step("wait for chunks", chunksReady(), () -> {
 		}, 60);
 		screenshot("01_world");
@@ -131,8 +148,7 @@ final class Scenario {
 		step("wait for chunks (clumps)", chunksReady(), () -> {
 		}, 40);
 		screenshot("07_clumps");
-		step("stair stack as highlight (through blocks)", this::noPendingScreenshots, () -> {
-			stairStack.style = WaypointStyle.BLOCK_HIGHLIGHT;
+		step("clump highlights through blocks", this::noPendingScreenshots, () -> {
 			stairStack.throughBlocks = true;
 			stairStack.highlightOpacity = 0.3f;
 			floorPatch.throughBlocks = true;
@@ -143,11 +159,9 @@ final class Scenario {
 			floorPatch.throughBlocks = false;
 		}, 5);
 		screenshot("09_clumps_highlight_depth");
-		step("stair stack back to beacon", this::noPendingScreenshots, () -> {
-			stairStack.style = WaypointStyle.BEACON;
-			WaypointManager.get().markDirty();
-		}, 1);
 		step("back to ground position (after clumps)", () -> true, () -> command("tp @a 0.5 " + FEET_Y + " 0.5 0 8"), 20);
+
+		walkingAwayShots();
 
 		menuShot("10_menu_beacon_block", () -> beaconBlock);
 		menuShot("11_menu_beacon_lapis", () -> beaconLapis);
@@ -155,6 +169,7 @@ final class Scenario {
 		menuShot("13_menu_highlight_no_logo", () -> highlightSolid);
 		menuShot("14_menu_no_selection", () -> null);
 		menuShot("15_menu_clump", () -> floorPatch);
+		menuMoveAndUndo();
 
 		step("open BlockPickerScreen", () -> true, this::openBlockPicker, 30);
 		step("screenshot block picker", this::noPendingScreenshots, () -> {
@@ -174,9 +189,14 @@ final class Scenario {
 		}, 30);
 		screenshot("31_settings_shrink_off");
 		step("close settings", this::noPendingScreenshots, () -> mc.gui.setScreen(null), 10);
+		step("open KeyBindsScreen", this::noPendingScreenshots, this::openKeyBinds, 30);
+		screenshot("32_key_binds");
+		step("close key binds", this::noPendingScreenshots, () -> mc.gui.setScreen(null), 10);
 		step("restore default settings (end)", () -> true, () -> setConfig(c -> {
 		}), 5);
 
+		step("real-time undo expiry", this::expiryProbeDue, this::checkExpiryProbe, 2);
+		step("load migrations", this::noPendingScreenshots, this::checkLoadMigrations, 2);
 		step("finish", this::noPendingScreenshots, () -> {
 			WaypointManager.get().save();
 			if (!screenshotFailures.isEmpty()) {
@@ -231,6 +251,7 @@ final class Scenario {
 	private void createWaypoints() {
 		WaypointManager wm = WaypointManager.get();
 		for (Waypoint w : wm.all()) wm.remove(w.id);
+		wm.expireDeletions(true); // otherwise N on an old waypoint's block would restore it (undo)
 		var dim = mc.level.dimension();
 
 		beaconBlock = wm.create(new BlockPos(-21, FEET_Y + 5, 30), dim, Identifier.withDefaultNamespace("diamond_block"));
@@ -238,12 +259,14 @@ final class Scenario {
 		beaconBlock.color = 0xE53935;
 		beaconBlock.style = WaypointStyle.BEACON;
 		beaconBlock.logoType = LogoType.BLOCK;
+		beaconBlock.showText = true;
 
 		beaconLapis = wm.create(new BlockPos(16, FEET_Y, 62), dim, Identifier.withDefaultNamespace("lapis_block"));
 		beaconLapis.setName("Lapis Beacon");
 		beaconLapis.color = 0x3AB3DA;
 		beaconLapis.style = WaypointStyle.BEACON;
 		beaconLapis.logoType = LogoType.BLOCK;
+		beaconLapis.showText = true;
 
 		highlightThrough = wm.create(new BlockPos(0, SURFACE_Y, 24), dim, Identifier.withDefaultNamespace("chest"));
 		highlightThrough.setName("Hidden Cache");
@@ -252,6 +275,7 @@ final class Scenario {
 		highlightThrough.logoType = LogoType.BLOCK;
 		highlightThrough.throughBlocks = true;
 		highlightThrough.highlightOpacity = 0.4f;
+		highlightThrough.showText = true;
 
 		highlightSolid = wm.create(new BlockPos(6, FEET_Y, 12), dim, Identifier.withDefaultNamespace("gold_block"));
 		highlightSolid.setName("Gold Block");
@@ -260,12 +284,20 @@ final class Scenario {
 		highlightSolid.logoType = LogoType.NONE;
 		highlightSolid.throughBlocks = false;
 		highlightSolid.highlightOpacity = 0.6f;
+		highlightSolid.showText = true;
 
 		farBeacon = wm.create(new BlockPos(10, FEET_Y, 200), dim, Identifier.withDefaultNamespace("amethyst_block"));
 		farBeacon.setName("Far Beacon");
 		farBeacon.color = 0x8932B8;
 		farBeacon.style = WaypointStyle.BEACON;
 		farBeacon.logoType = LogoType.BLOCK;
+		farBeacon.showText = false; // logo only
+
+		walkTest = wm.create(new BlockPos(60, SURFACE_Y, 0), dim, Identifier.withDefaultNamespace("emerald_block"));
+		walkTest.setName("Walk Test");
+		walkTest.color = 0x5E7C16;
+		walkTest.showText = true;
+		walkTest.visible = false; // only shown for the walking-away screenshots
 
 		wm.select(beaconBlock.id);
 		wm.markDirty();
@@ -282,10 +314,9 @@ final class Scenario {
 		for (int z = -9; z <= -7; z++) {
 			for (int x = -6; x <= -3; x++) floor.add(new BlockPos(x, SURFACE_Y, z));
 		}
-		floorPatch = holdOver(keys, floor);
+		floorPatch = holdOver(keys, floor, false);
 		floorPatch.setName("Floor Patch");
 		floorPatch.color = 0x169C9C; // cyan
-		floorPatch.style = WaypointStyle.BLOCK_HIGHLIGHT;
 		floorPatch.throughBlocks = false;
 		floorPatch.highlightOpacity = 0.35f;
 
@@ -298,25 +329,30 @@ final class Scenario {
 				for (int y = FEET_Y; y <= FEET_Y + (x - 2); y++) stairs.add(new BlockPos(x, y, z));
 			}
 		}
-		stairStack = holdOver(keys, stairs);
+		stairStack = holdOver(keys, stairs, true);
 		stairStack.setName("Stair Stack");
 		stairStack.color = 0xF38BAA; // pink
-		stairStack.style = WaypointStyle.BEACON;
+		check(stairStack.style == WaypointStyle.BLOCK_HIGHLIGHT && !stairStack.isBeacon(),
+				"Stair Stack (BEACON at the press) was not forced to BLOCK_HIGHLIGHT when it grew: " + stairStack.style);
 
 		WaypointManager.get().select(beaconBlock.id);
 		WaypointManager.get().markDirty();
 		check(floorPatch.size() == 12, "Floor Patch has " + floorPatch.size() + " blocks, expected 12");
 		check(stairStack.size() == 14, "Stair Stack has " + stairStack.size() + " blocks, expected 14");
 		check(floorPatch.logoBlock.toString().equals("minecraft:smooth_stone"), "Floor Patch logo is " + floorPatch.logoBlock);
-		DevtestClient.log("clumps: Floor Patch " + floorPatch.size() + " blocks (centre " + floorPatch.centre() + ", beam "
-				+ floorPatch.beamBlock() + "), Stair Stack " + stairStack.size() + " blocks (top y " + stairStack.topY()
-				+ ", beam " + stairStack.beamBlock() + " from y " + (stairStack.beamColumnTopY() + 1) + ")");
+		DevtestClient.log("clumps: Floor Patch " + floorPatch.size() + " blocks (centre " + floorPatch.centre() + "), Stair Stack "
+				+ stairStack.size() + " blocks (top y " + stairStack.topY() + ", style " + stairStack.style + " forced from BEACON)");
 	}
 
-	/** Simulates pressing N on the first block and holding it while the target moves over the others. */
-	private Waypoint holdOver(CreateKeyHandler keys, List<BlockPos> targets) {
+	/**
+	 * Simulates pressing N on the first block and holding it while the target moves over the others.
+	 *
+	 * @param beaconAtPress set the new waypoint to BEACON right after the press (growing must force it back)
+	 */
+	private Waypoint holdOver(CreateKeyHandler keys, List<BlockPos> targets, boolean beaconAtPress) {
 		Waypoint w = keys.press(mc, targets.getFirst(), false);
 		check(w != null, "press on a free block " + targets.getFirst() + " did not create a waypoint");
+		if (beaconAtPress) w.style = WaypointStyle.BEACON;
 		for (BlockPos pos : targets.subList(1, targets.size())) keys.extend(mc, pos);
 		keys.release(mc);
 		return w;
@@ -376,6 +412,308 @@ final class Scenario {
 			DevtestClient.log("saved " + file.getFileName() + ": Stair Stack blocks=" + found);
 		} catch (java.io.IOException e) {
 			throw new IllegalStateException("could not read the waypoint file", e);
+		}
+	}
+
+	/** "+ New here" / N defaults: Block Selection, depth-tested, opacity 0.4, text off, visible, logo = the block. */
+	private void checkDefaults() {
+		WaypointManager wm = WaypointManager.get();
+		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
+		Waypoint menu = WaypyClient.createWaypointAt(mc, new BlockPos(20, SURFACE_Y, -20)); // the "+ New here" path
+		Waypoint key = keys.press(mc, new BlockPos(21, SURFACE_Y, -20), false);
+		keys.release(mc);
+		for (Waypoint w : new Waypoint[] {menu, key}) {
+			check(w != null, "default waypoint not created");
+			check(w.style == WaypointStyle.BLOCK_HIGHLIGHT, "default style is " + w.style);
+			check(!w.throughBlocks, "default throughBlocks is true");
+			check(w.highlightOpacity == 0.4f, "default opacity is " + w.highlightOpacity);
+			check(!w.showText, "default showText is true");
+			check(w.visible && w.logoType == LogoType.BLOCK && w.logoBlock.toString().equals("minecraft:grass_block"),
+					"default visible/logo wrong: " + w.visible + " " + w.logoType + " " + w.logoBlock);
+			wm.remove(w.id);
+		}
+		wm.expireDeletions(true);
+		wm.select(beaconBlock.id);
+		DevtestClient.log("defaults OK: BLOCK_HIGHLIGHT, throughBlocks=false, opacity=0.4, showText=false (N and + New here)");
+	}
+
+	/** Undo through the real N handler: delete, restore (same id, fields, blocks), blocked restore, forced expiry. */
+	private void checkUndo() {
+		WaypointManager wm = WaypointManager.get();
+		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
+		var dim = mc.level.dimension();
+		List<BlockPos> blocks = List.of(new BlockPos(22, SURFACE_Y, -22), new BlockPos(23, SURFACE_Y, -22), new BlockPos(23, SURFACE_Y, -23));
+		Waypoint w = holdOver(keys, blocks, false);
+		w.setName("Undo Me");
+		w.color = 0x123456;
+		w.logoType = LogoType.NONE;
+		w.highlightOpacity = 0.7f;
+		w.throughBlocks = true;
+		w.showText = true;
+		String before = describe(w);
+		var id = w.id;
+
+		// Delete with N on a non-anchor block.
+		check(keys.press(mc, blocks.get(1), false) == null, "N on a waypoint block created a waypoint");
+		keys.release(mc);
+		check(wm.byId(id).isEmpty() && !wm.visibleIn(dim).contains(w), "N-toggle did not remove the waypoint");
+		for (BlockPos pos : blocks) check(wm.waypointAt(pos, dim) == null, "index still has " + pos + " after the delete");
+		check(wm.lastDeleted().map(d -> d.waypoint().id.equals(id)).orElse(false), "deletion is not pending");
+
+		// N (look-at mode this time) on another of its blocks restores it, without starting a clump.
+		check(keys.press(mc, blocks.get(2), true) == null, "the undo press created a waypoint");
+		check(keys.activeClump() == null, "the undo press started a clump");
+		keys.extend(mc, new BlockPos(24, SURFACE_Y, -22));
+		check(wm.waypointAt(new BlockPos(24, SURFACE_Y, -22), dim) == null, "holding after the undo press added a block");
+		keys.release(mc);
+		Waypoint restored = wm.byId(id).orElse(null);
+		check(restored != null, "N within 15 s did not restore the waypoint");
+		check(describe(restored).equals(before), "restored waypoint differs:\n  " + describe(restored) + "\n  " + before);
+		for (BlockPos pos : blocks) check(wm.waypointAt(pos, dim) == restored, "index lacks " + pos + " after the restore");
+		check(wm.lastDeleted().isEmpty(), "restored deletion still pending");
+		DevtestClient.log("undo via N OK: " + before);
+
+		// A block claimed meanwhile blocks the restore: the press is handled normally (creates a waypoint).
+		keys.press(mc, blocks.get(0), false);
+		keys.release(mc);
+		Waypoint claimer = wm.create(blocks.get(0), dim, null); // like "+ New here"
+		Waypoint fresh = keys.press(mc, blocks.get(1), false);
+		keys.release(mc);
+		check(fresh != null && !fresh.id.equals(id) && wm.byId(id).isEmpty(), "restored although a block was claimed");
+		wm.remove(claimer.id);
+		wm.remove(fresh.id);
+
+		// Forced expiry: gone for good, and N on its block creates a new waypoint.
+		wm.expireDeletions(true);
+		check(wm.lastDeleted().isEmpty() && wm.restore(id) == null, "expired deletion still restorable");
+		Waypoint again = keys.press(mc, blocks.get(2), false);
+		keys.release(mc);
+		check(again != null && !again.id.equals(id) && again.size() == 1, "N after expiry did not create a new waypoint");
+		wm.remove(again.id);
+		wm.expireDeletions(true);
+		wm.select(beaconBlock.id);
+		DevtestClient.log("undo blocked by a claimed block; forced expiry permanent");
+	}
+
+	/** Deletes a waypoint with N now; {@link #checkExpiryProbe} checks it can't be restored once 15 s have passed. */
+	private void startExpiryProbe() {
+		WaypointManager wm = WaypointManager.get();
+		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
+		BlockPos pos = new BlockPos(26, SURFACE_Y, -26);
+		expiryProbe = keys.press(mc, pos, false);
+		keys.release(mc);
+		check(expiryProbe != null, "expiry probe not created");
+		expiryProbe.setName("Expiry Probe");
+		expiryProbeBlocks = List.copyOf(expiryProbe.blocks());
+		keys.press(mc, pos, false);
+		keys.release(mc);
+		expiryProbeDeletedAt = Util.getMillis();
+		var pending = wm.lastDeleted().orElse(null);
+		check(pending != null && pending.waypoint() == expiryProbe && wm.canRestore(pending), "expiry probe deletion not pending");
+		check(wm.remainingUndoMillis(pending) > 14_000, "undo window shorter than expected: " + wm.remainingUndoMillis(pending));
+		wm.select(beaconBlock.id);
+	}
+
+	private boolean expiryProbeDue() {
+		return Util.getMillis() - expiryProbeDeletedAt > WaypointManager.UNDO_WINDOW_MILLIS + 500;
+	}
+
+	private void checkExpiryProbe() {
+		WaypointManager wm = WaypointManager.get();
+		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
+		long age = Util.getMillis() - expiryProbeDeletedAt;
+		check(wm.lastDeleted().map(d -> d.waypoint() != expiryProbe).orElse(true), "probe still pending after " + age + " ms");
+		check(wm.restore(expiryProbe.id) == null, "probe restorable after " + age + " ms");
+		Waypoint created = keys.press(mc, expiryProbeBlocks.getFirst(), false);
+		keys.release(mc);
+		check(created != null && !created.id.equals(expiryProbe.id), "N on the expired probe's block did not create a new waypoint");
+		wm.remove(created.id);
+		wm.expireDeletions(true);
+		DevtestClient.log("real-time expiry OK: probe gone for good after " + age + " ms");
+	}
+
+	/**
+	 * Disconnect/rejoin: a pending deletion becomes permanent (not saved, not restorable); on load a multi-block BEACON
+	 * becomes BLOCK_HIGHLIGHT and a waypoint without {@code showText} keeps its label. Waypoint objects are new afterwards.
+	 */
+	private void checkLoadMigrations() {
+		WaypointManager wm = WaypointManager.get();
+		var dim = mc.level.dimension();
+		Waypoint doomed = wm.create(new BlockPos(28, SURFACE_Y, -28), dim, null);
+		var doomedId = doomed.id;
+		wm.remove(doomedId);
+		String key = wm.worldKey();
+		wm.onDisconnect();
+		check(wm.all().isEmpty() && wm.worldKey() == null, "disconnect did not unload");
+		java.nio.file.Path file = mc.gameDirectory.toPath().resolve("waypy").resolve(key + ".json");
+		try {
+			String json = java.nio.file.Files.readString(file);
+			check(!json.contains(doomedId.toString()), "pending deletion was saved");
+			var root = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+			for (var el : root.getAsJsonArray("waypoints")) {
+				var o = el.getAsJsonObject();
+				String id = o.get("id").getAsString();
+				if (id.equals(stairStack.id.toString())) o.addProperty("style", "BEACON"); // an old clump beacon
+				if (id.equals(highlightThrough.id.toString())) o.remove("showText"); // written before showText existed
+			}
+			java.nio.file.Files.writeString(file, new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(root));
+		} catch (java.io.IOException e) {
+			throw new IllegalStateException("could not edit the waypoint file", e);
+		}
+		wm.onJoin(mc);
+		check(wm.byId(doomedId).isEmpty() && wm.restore(doomedId) == null, "deletion pending at disconnect came back");
+		Waypoint stairs = wm.byId(stairStack.id).orElseThrow();
+		check(stairs.style == WaypointStyle.BLOCK_HIGHLIGHT && stairs.size() == 14, "clump BEACON not migrated: " + stairs.style);
+		check(wm.byId(highlightThrough.id).orElseThrow().showText, "missing showText did not load as true");
+		check(!wm.byId(farBeacon.id).orElseThrow().showText && wm.byId(beaconBlock.id).orElseThrow().showText, "showText not round-tripped");
+		DevtestClient.log("load: clump BEACON -> BLOCK_HIGHLIGHT, missing showText -> true, pending deletion dropped at disconnect");
+	}
+
+	/** Name, fields and blocks of a waypoint, for exact comparisons. */
+	private static String describe(Waypoint w) {
+		return w.id + " \"" + w.name + "\" " + w.dimension.identifier() + " color=" + Integer.toHexString(w.color) + " " + w.style
+				+ " " + w.logoType + " " + w.logoBlock + " opacity=" + w.highlightOpacity + " through=" + w.throughBlocks
+				+ " visible=" + w.visible + " text=" + w.showText + " blocks=" + w.blocks();
+	}
+
+	/**
+	 * Walking away from "Walk Test" (alone on screen, text on): two shots three blocks apart, then a sequence at
+	 * doubling distances. The marker shrinks continuously; compare the crops for jumps or jitter.
+	 */
+	private void walkingAwayShots() {
+		List<Waypoint> hidden = new ArrayList<>();
+		step("walk test: show only Walk Test", this::noPendingScreenshots, () -> {
+			for (Waypoint w : WaypointManager.get().all()) {
+				if (w.visible && w != walkTest) {
+					w.visible = false;
+					hidden.add(w);
+				}
+			}
+			walkTest.visible = true;
+		}, 1);
+		String[][] shots = {{"40_walk_d40", "40"}, {"41_walk_d43", "43"}, {"42_walk_seq_d16", "16"}, {"43_walk_seq_d32", "32"},
+				{"44_walk_seq_d64", "64"}, {"45_walk_seq_d128", "128"}, {"46_walk_seq_d256", "256"}};
+		for (String[] shot : shots) {
+			double d = Double.parseDouble(shot[1]);
+			// Facing +X (yaw -90), level; Walk Test's block centre is at x 60.5, z 0.5.
+			step("walk back to " + shot[1] + " blocks", this::noPendingScreenshots,
+					() -> command("tp @a " + (60.5 - d) + " " + FEET_Y + " 0.5 -90 0"), 30);
+			screenshot(shot[0]);
+		}
+		step("walk test: restore visibility", this::noPendingScreenshots, () -> {
+			for (Waypoint w : hidden) w.visible = true;
+			walkTest.visible = false;
+			command("tp @a 0.5 " + FEET_Y + " 0.5 0 8");
+		}, 20);
+	}
+
+	/** The menu: move a clump through the X/Y/Z boxes (index checks, overlap, clamp), then Delete (no confirm) and Undo. */
+	private void menuMoveAndUndo() {
+		WaypointScreen[] screen = new WaypointScreen[1];
+		step("menu: move Floor Patch via coordinates", this::noPendingScreenshots, () -> {
+			WaypointManager.get().select(floorPatch.id);
+			screen[0] = new WaypointScreen(floorPatch);
+			mc.gui.setScreen(screen[0]);
+			checkCoordinateMove(screen[0]);
+		}, 10);
+		screenshot("16_menu_coords_overlap");
+		step("menu: coordinates back", this::noPendingScreenshots, () -> {
+			List<EditBox> boxes = screen[0].coordinateBoxes();
+			boxes.get(1).setValue(String.valueOf(SURFACE_Y));
+			boxes.get(0).setValue("-6");
+			check(floorPatch.anchor().equals(new BlockPos(-6, SURFACE_Y, -9)), "Floor Patch not moved back: " + floorPatch.anchor());
+			check(WaypointManager.get().waypointAt(new BlockPos(-3, SURFACE_Y, -7), mc.level.dimension()) == floorPatch,
+					"index not restored after moving back");
+		}, 5);
+		step("menu: Delete Gold Block", this::noPendingScreenshots, () -> {
+			WaypointManager.get().select(highlightSolid.id);
+			screen[0] = new WaypointScreen(highlightSolid);
+			mc.gui.setScreen(screen[0]);
+			String before = describe(highlightSolid);
+			screen[0].deleteSelected();
+			check(mc.gui.screen() == screen[0], "Delete opened another screen (confirm dialog?)");
+			check(WaypointManager.get().byId(highlightSolid.id).isEmpty(), "menu Delete did not remove the waypoint");
+			Button undo = screen[0].undoButton();
+			check(undo != null && undo.visible && undo.active, "Undo button not shown after Delete");
+			undoSnapshot = before;
+		}, 10);
+		screenshot("17_menu_undo_offered");
+		step("menu: Undo", this::noPendingScreenshots, () -> {
+			screen[0].undoDelete();
+			Waypoint restored = WaypointManager.get().byId(highlightSolid.id).orElse(null);
+			check(restored == highlightSolid && describe(restored).equals(undoSnapshot), "menu Undo did not restore Gold Block unchanged");
+			check(screen[0].selectedWaypoint() == highlightSolid, "menu Undo did not re-select the waypoint");
+			Button undo = screen[0].undoButton();
+			check(undo != null && !undo.visible, "Undo button still shown after the undo");
+			DevtestClient.log("menu Delete (no confirm) + Undo OK: " + undoSnapshot);
+		}, 10);
+		screenshot("18_menu_undone");
+		step("menu: close", this::noPendingScreenshots, () -> mc.gui.setScreen(null), 5);
+	}
+
+	private String undoSnapshot;
+
+	private void checkCoordinateMove(WaypointScreen screen) {
+		WaypointManager wm = WaypointManager.get();
+		var dim = mc.level.dimension();
+		List<EditBox> boxes = screen.coordinateBoxes();
+		check(boxes.size() == 3, "expected 3 coordinate boxes, got " + boxes.size());
+		check(boxes.get(0).getValue().equals("-6") && boxes.get(1).getValue().equals(String.valueOf(SURFACE_Y))
+				&& boxes.get(2).getValue().equals("-9"), "coordinate boxes don't show the anchor");
+		List<BlockPos> before = List.copyOf(floorPatch.blocks());
+		int version = floorPatch.version();
+
+		// X: -6 -> -26 translates all 12 blocks.
+		boxes.get(0).setValue("-26");
+		check(floorPatch.version() != version, "version not bumped by the move");
+		for (int i = 0; i < before.size(); i++) {
+			BlockPos expected = before.get(i).offset(-20, 0, 0);
+			check(floorPatch.blocks().get(i).equals(expected), "block " + i + " is " + floorPatch.blocks().get(i) + ", expected " + expected);
+			check(wm.waypointAt(expected, dim) == floorPatch, "index lacks moved block " + expected);
+			check(wm.waypointAt(before.get(i), dim) == null, "index still has old block " + before.get(i));
+		}
+		// Invalid input is not applied.
+		boxes.get(2).setValue("-");
+		boxes.get(2).setValue("1x");
+		check(floorPatch.anchor().getZ() == -9, "invalid Z applied");
+		// Y is clamped to the build height.
+		boxes.get(1).setValue("99999");
+		check(floorPatch.anchor().getY() == mc.level.getMaxY(), "Y not clamped: " + floorPatch.anchor());
+		check(boxes.get(1).getValue().equals(String.valueOf(mc.level.getMaxY())), "clamped Y not shown: " + boxes.get(1).getValue());
+		boxes.get(1).setValue(String.valueOf(SURFACE_Y));
+		// Move under the stairs (free), then up into them: refused, nothing moves.
+		boxes.get(0).setValue("2");
+		check(floorPatch.anchor().equals(new BlockPos(2, SURFACE_Y, -9)), "move to x=2 failed: " + floorPatch.anchor());
+		boxes.get(1).setValue(String.valueOf(FEET_Y));
+		check(floorPatch.anchor().equals(new BlockPos(2, SURFACE_Y, -9)), "move onto Stair Stack was applied");
+		check(wm.waypointAt(new BlockPos(2, FEET_Y, -9), dim) == stairStack, "Stair Stack block taken over by the refused move");
+		DevtestClient.log("coordinate move OK: clump translated with index in sync, invalid input ignored, Y clamped to "
+				+ mc.level.getMaxY() + ", overlap with Stair Stack refused (Y box red in 16_menu_coords_overlap)");
+	}
+
+	/** Vanilla Key Binds screen, scrolled to the Waypy category. */
+	private void openKeyBinds() {
+		for (KeyMapping k : List.of(WaypyClient.createKey, WaypyClient.menuKey, WaypyClient.lookModifierKey)) {
+			check(java.util.Arrays.asList(mc.options.keyMappings).contains(k), k.getName() + " not in options.keyMappings");
+		}
+		KeyBindsScreen screen = new KeyBindsScreen(new WaypointScreen(null), mc.options);
+		mc.gui.setScreen(screen);
+		try {
+			java.lang.reflect.Field listField = KeyBindsScreen.class.getDeclaredField("keyBindsList");
+			listField.setAccessible(true);
+			KeyBindsList list = (KeyBindsList) listField.get(screen);
+			java.lang.reflect.Field keyField = KeyBindsList.KeyEntry.class.getDeclaredField("key");
+			keyField.setAccessible(true);
+			int row = -1;
+			for (int i = 0; i < list.children().size(); i++) {
+				if (list.children().get(i) instanceof KeyBindsList.KeyEntry e && keyField.get(e) == WaypyClient.createKey) row = i;
+			}
+			check(row > 0, "Waypy keys not in the Key Binds list");
+			// Category header (row - 1) at the top; the list clamps the amount at its end.
+			list.setScrollAmount((row - 1) * 20.0);
+			DevtestClient.log("Key Binds: Waypy keys at rows " + (row - 1) + ".." + (row + 2));
+		} catch (ReflectiveOperationException e) {
+			throw new IllegalStateException("could not scroll the Key Binds list", e);
 		}
 	}
 

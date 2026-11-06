@@ -3,6 +3,8 @@ package dev.waypy.gui;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
+import java.util.regex.Pattern;
 
 import org.jspecify.annotations.Nullable;
 
@@ -25,11 +27,12 @@ import net.minecraft.client.gui.layouts.HeaderAndFooterLayout;
 import net.minecraft.client.gui.layouts.LinearLayout;
 import net.minecraft.client.gui.layouts.SpacerElement;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
-import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.InputWithModifiers;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
@@ -39,6 +42,7 @@ import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.phys.AABB;
 
 import dev.waypy.WaypyClient;
 import dev.waypy.waypoint.LogoType;
@@ -54,15 +58,22 @@ import dev.waypy.waypoint.WaypointStyle;
 public class WaypointScreen extends Screen {
 	private static final Component NEW_HERE = Component.translatable("waypy.gui.new_here");
 	private static final Component DELETE = Component.translatable("waypy.gui.delete");
+	private static final Component UNDO = Component.translatable("waypy.gui.undo");
 	private static final Component NAME_LABEL = Component.translatable("waypy.gui.name");
+	private static final Component POSITION_LABEL = Component.translatable("waypy.gui.position");
+	private static final Component POSITION_CLUMP_LABEL = Component.translatable("waypy.gui.position.clump");
+	private static final Component POSITION_INVALID = Component.translatable("waypy.gui.position.invalid");
 	private static final Component COLOR_LABEL = Component.translatable("waypy.gui.color");
 	private static final Component HEX_LABEL = Component.translatable("waypy.gui.color.hex");
 	private static final Component STYLE_LABEL = Component.translatable("waypy.gui.style");
+	private static final Component STYLE_CLUMP_TOOLTIP = Component.translatable("waypy.gui.style.clump_tooltip");
 	private static final Component LOGO_LABEL = Component.translatable("waypy.gui.logo");
 	private static final Component LOGO_BLOCK_TOOLTIP = Component.translatable("waypy.gui.logo_block.tooltip");
 	private static final Component OPACITY_LABEL = Component.translatable("waypy.gui.opacity");
 	private static final Component THROUGH_BLOCKS_LABEL = Component.translatable("waypy.gui.through_blocks");
 	private static final Component VISIBLE_LABEL = Component.translatable("waypy.gui.visible");
+	private static final Component SHOW_TEXT_LABEL = Component.translatable("waypy.gui.show_text");
+	private static final Component SHOW_TEXT_TOOLTIP = Component.translatable("waypy.gui.show_text.tooltip");
 	private static final Component SETTINGS = Component.translatable("waypy.gui.settings");
 
 	/** Height of one list row: 2px padding + two text lines / a 16px swatch + 2px padding. */
@@ -84,6 +95,12 @@ public class WaypointScreen extends Screen {
 	private static final int SETTINGS_MAX_WIDTH = 90;
 	private static final int GRAY = 0xFF808080;
 	private static final int LIGHT_GRAY = 0xFFA0A0A0;
+	/** A coordinate: an optional '-' and up to 8 digits. */
+	private static final Pattern COORDINATE = Pattern.compile("-?\\d{1,8}");
+	/** Narrowest coordinate box that still goes on one row with the other two; narrower editors stack them. */
+	private static final int MIN_INLINE_COORD_WIDTH = 40;
+	private static final int COORD_LABEL_GAP = 4;
+	private static final int COORD_GROUP_GAP = 8;
 
 	private HeaderAndFooterLayout layout = new HeaderAndFooterLayout(this);
 	private final WaypointManager manager = WaypointManager.get();
@@ -97,12 +114,20 @@ public class WaypointScreen extends Screen {
 	private boolean twoColumns;
 
 	private @Nullable WaypointList list;
+	private @Nullable Button newHereButton;
 	private @Nullable Button deleteButton;
+	private @Nullable Button undoButton;
+	/** The deletion the Undo button currently offers (null: the button is hidden). */
+	private WaypointManager.@Nullable DeletedWaypoint undoOffer;
+	private boolean undoRestorable;
 	private @Nullable ScrollableLayout editorScroll;
 	private LinearLayout editorContent = LinearLayout.vertical();
 
 	// editor widgets of the selected waypoint (rebuilt on selection change and on init)
 	private @Nullable EditBox nameBox;
+	private final List<EditBox> coordBoxes = new ArrayList<>();
+	/** Set while a coordinate box's text is rewritten by code (Y clamping), so its responder ignores it. */
+	private boolean updatingCoordinate;
 	private final List<ColorSwatch> swatches = new ArrayList<>();
 	private @Nullable EditBox hexBox;
 	private @Nullable CycleButton<WaypointStyle> styleButton;
@@ -111,6 +136,7 @@ public class WaypointScreen extends Screen {
 	private @Nullable OpacitySlider opacitySlider;
 	private @Nullable Checkbox throughBlocksBox;
 	private @Nullable CycleButton<Boolean> visibleButton;
+	private @Nullable CycleButton<Boolean> showTextButton;
 
 	public WaypointScreen(@Nullable Waypoint selected) {
 		super(Component.translatable("waypy.screen.title"));
@@ -132,11 +158,11 @@ public class WaypointScreen extends Screen {
 		list = addRenderableWidget(new WaypointList(minecraft, listWidth, listHeight, top));
 		list.setX(listX);
 
-		int buttonY = list.getBottom() + 5;
-		int newWidth = (listWidth - 4) / 2;
-		addRenderableWidget(Button.builder(NEW_HERE, b -> createHere()).bounds(listX, buttonY, newWidth, Button.DEFAULT_HEIGHT).build());
-		deleteButton = addRenderableWidget(Button.builder(DELETE, b -> confirmDelete())
-				.bounds(listX + newWidth + 4, buttonY, listWidth - 4 - newWidth, Button.DEFAULT_HEIGHT).build());
+		newHereButton = addRenderableWidget(Button.builder(NEW_HERE, b -> createHere()).size(0, Button.DEFAULT_HEIGHT).build());
+		deleteButton = addRenderableWidget(Button.builder(DELETE, b -> deleteSelected()).size(0, Button.DEFAULT_HEIGHT).build());
+		undoButton = addRenderableWidget(Button.builder(UNDO, b -> undoDelete()).size(0, Button.DEFAULT_HEIGHT).build());
+		undoOffer = null;
+		updateUndoButton(true);
 
 		editorContent = LinearLayout.vertical().spacing(4);
 		editorScroll = new ScrollableLayout(minecraft, editorContent, Math.max(20, layout.getContentHeight() - 8),
@@ -156,6 +182,46 @@ public class WaypointScreen extends Screen {
 		// Footer last so it comes last in tab order.
 		layout.visitWidgets(this::addRenderableWidget);
 		addSettingsButton();
+	}
+
+	/**
+	 * Lays out the row under the list: {@code + New here | Delete}, or {@code + New here | Delete | Undo} while a
+	 * deletion can be undone.
+	 */
+	private void layoutListButtons() {
+		if (list == null || newHereButton == null || deleteButton == null || undoButton == null) return;
+		int y = list.getBottom() + 5;
+		boolean undo = undoOffer != null;
+		int count = undo ? 3 : 2;
+		int each = (listWidth - 4 * (count - 1)) / count;
+		int first = listWidth - 4 * (count - 1) - each * (count - 1); // "+ New here" takes the rounding remainder
+		newHereButton.setRectangle(first, Button.DEFAULT_HEIGHT, listX, y);
+		deleteButton.setRectangle(each, Button.DEFAULT_HEIGHT, listX + first + 4, y);
+		undoButton.setRectangle(each, Button.DEFAULT_HEIGHT, listX + first + 4 + each + 4, y);
+		undoButton.visible = undo;
+	}
+
+	/**
+	 * Shows the Undo button while the manager has a pending deletion (15 s), active only if it can be restored
+	 * (its blocks are still free). Called on init and every tick.
+	 */
+	private void updateUndoButton(boolean force) {
+		if (undoButton == null) return;
+		WaypointManager.DeletedWaypoint offer = manager.lastDeleted().orElse(null);
+		boolean restorable = offer != null && manager.canRestore(offer);
+		if (!force && offer == undoOffer && restorable == undoRestorable) return;
+		undoOffer = offer;
+		undoRestorable = restorable;
+		undoButton.active = restorable;
+		undoButton.setTooltip(offer == null ? null : Tooltip.create(Component.translatable(
+				restorable ? "waypy.gui.undo.tooltip" : "waypy.gui.undo.blocked", offer.waypoint().name)));
+		layoutListButtons();
+	}
+
+	@Override
+	public void tick() {
+		super.tick();
+		updateUndoButton(false);
 	}
 
 	/**
@@ -210,6 +276,7 @@ public class WaypointScreen extends Screen {
 			});
 		}
 		swatches.clear();
+		coordBoxes.clear();
 		nameBox = hexBox = null;
 		styleButton = null;
 		logoTypeButton = null;
@@ -217,6 +284,7 @@ public class WaypointScreen extends Screen {
 		opacitySlider = null;
 		throughBlocksBox = null;
 		visibleButton = null;
+		showTextButton = null;
 		if (deleteButton != null) deleteButton.active = selected != null;
 
 		Waypoint w = selected;
@@ -231,6 +299,11 @@ public class WaypointScreen extends Screen {
 				w.setName(value);
 				manager.markDirty();
 			});
+
+			int coordWidth = coordinatesInline() ? inlineCoordinateWidth() : full - font.width("X") - COORD_LABEL_GAP;
+			for (Direction.Axis axis : Direction.Axis.values()) {
+				coordBoxes.add(coordinateBox(w, axis, coordWidth));
+			}
 
 			for (DyeColor dye : DyeColor.values()) {
 				swatches.add(new ColorSwatch(dye, w));
@@ -261,6 +334,11 @@ public class WaypointScreen extends Screen {
 						manager.markDirty();
 						layoutEditor();
 					});
+			if (w.isClump()) {
+				// A clump is always Block Selection (the manager enforces it); the style can't be changed.
+				styleButton.active = false;
+				styleButton.setTooltip(Tooltip.create(STYLE_CLUMP_TOOLTIP));
+			}
 
 			logoTypeButton = CycleButton.<LogoType>builder(WaypointScreen::logoTypeName, w.logoType)
 					.withValues(LogoType.values())
@@ -293,8 +371,99 @@ public class WaypointScreen extends Screen {
 						w.visible = value;
 						manager.markDirty();
 					});
+
+			showTextButton = CycleButton.onOffBuilder(w.showText)
+					.create(0, 0, half, Button.DEFAULT_HEIGHT, SHOW_TEXT_LABEL, (button, value) -> {
+						w.showText = value;
+						manager.markDirty();
+					});
+			showTextButton.setTooltip(Tooltip.create(SHOW_TEXT_TOOLTIP));
 		}
 		layoutEditor();
+	}
+
+	/** Width of each coordinate box when X, Y and Z share one row. */
+	private int inlineCoordinateWidth() {
+		int labels = font.width("X") + font.width("Y") + font.width("Z") + 3 * COORD_LABEL_GAP;
+		return (editorWidth - labels - 2 * COORD_GROUP_GAP) / 3;
+	}
+
+	private boolean coordinatesInline() {
+		return inlineCoordinateWidth() >= MIN_INLINE_COORD_WIDTH;
+	}
+
+	/**
+	 * One coordinate of the waypoint's anchor (first block). Typing a whole number moves the waypoint (a clump is
+	 * translated as a whole) through {@link WaypointManager#move}, as the hex box applies colors: invalid input or a
+	 * move onto another waypoint's blocks turns the text red, gives the reason as a tooltip and isn't applied. Y is
+	 * clamped so every block stays within the current level's build height.
+	 */
+	private EditBox coordinateBox(Waypoint w, Direction.Axis axis, int boxWidth) {
+		Component name = Component.translatable("waypy.gui.position." + axis.getName());
+		EditBox box = new EditBox(font, boxWidth, Button.DEFAULT_HEIGHT, name);
+		box.setMaxLength(9);
+		box.setValue(String.valueOf(w.anchor().get(axis)));
+		box.setResponder(value -> {
+			if (updatingCoordinate) return;
+			applyCoordinate(box, w, axis, value);
+		});
+		return box;
+	}
+
+	/** The menu's move path, public for the devtest: applies {@code value} typed into the {@code axis} box. */
+	public void applyCoordinate(EditBox box, Waypoint w, Direction.Axis axis, String value) {
+		String text = value.trim();
+		if (!COORDINATE.matcher(text).matches()) {
+			markCoordinate(box, POSITION_INVALID);
+			return;
+		}
+		int target = Integer.parseInt(text);
+		BlockPos anchor = w.anchor();
+		Component note = null;
+		if (axis == Direction.Axis.Y && minecraft.level != null) {
+			// Keep the whole clump inside the build height: the anchor's range shrinks by the blocks below/above it.
+			AABB bounds = w.bounds();
+			int below = anchor.getY() - (int) bounds.minY;
+			int above = (int) bounds.maxY - 1 - anchor.getY();
+			int min = minecraft.level.getMinY() + below;
+			int max = minecraft.level.getMaxY() - above;
+			if (target < min || target > max) {
+				target = Math.clamp(target, min, Math.max(min, max));
+				note = Component.translatable("waypy.gui.position.clamped", minecraft.level.getMinY(), minecraft.level.getMaxY());
+			}
+		}
+		BlockPos moved = switch (axis) {
+			case X -> new BlockPos(target, anchor.getY(), anchor.getZ());
+			case Y -> new BlockPos(anchor.getX(), target, anchor.getZ());
+			case Z -> new BlockPos(anchor.getX(), anchor.getY(), target);
+		};
+		WaypointManager.MoveResult result = manager.move(w, moved);
+		switch (result.status()) {
+			case OVERLAP -> {
+				Waypoint blocker = result.blocker();
+				markCoordinate(box, Component.translatable("waypy.gui.position.overlap", blocker != null ? blocker.name : "?"));
+				return;
+			}
+			case UNKNOWN_WAYPOINT -> {
+				markCoordinate(box, POSITION_INVALID);
+				return;
+			}
+			default -> {
+			}
+		}
+		box.setTextColor(EditBox.DEFAULT_TEXT_COLOR);
+		box.setTooltip(note == null ? null : Tooltip.create(note));
+		if (note != null) {
+			updatingCoordinate = true;
+			box.setValue(String.valueOf(target));
+			updatingCoordinate = false;
+		}
+	}
+
+	/** Shows a coordinate box as invalid (red text) with the reason as its tooltip. */
+	private static void markCoordinate(EditBox box, Component reason) {
+		box.setTextColor(INVALID_TEXT_COLOR);
+		box.setTooltip(Tooltip.create(reason));
 	}
 
 	private boolean hexInline() {
@@ -310,9 +479,24 @@ public class WaypointScreen extends Screen {
 		Waypoint w = selected;
 		if (w != null && nameBox != null && hexBox != null && styleButton != null && logoTypeButton != null
 				&& logoBlockButton != null && opacitySlider != null && throughBlocksBox != null
-				&& visibleButton != null) {
+				&& visibleButton != null && showTextButton != null && coordBoxes.size() == 3) {
 			editorContent.addChild(label(NAME_LABEL));
 			editorContent.addChild(nameBox);
+
+			// Position (the anchor) under the name: "X [ ] Y [ ] Z [ ]" on one row, or one row each when narrow.
+			editorContent.addChild(label(w.isClump() ? POSITION_CLUMP_LABEL : POSITION_LABEL), s -> s.paddingTop(2));
+			boolean inline = coordinatesInline();
+			LinearLayout coordRow = LinearLayout.horizontal().spacing(COORD_GROUP_GAP);
+			Direction.Axis[] axes = Direction.Axis.values();
+			for (int i = 0; i < axes.length; i++) {
+				LinearLayout group = LinearLayout.horizontal().spacing(COORD_LABEL_GAP);
+				group.addChild(new StringWidget(Component.literal(axes[i].getName().toUpperCase(Locale.ROOT)), font),
+						s -> s.alignVerticallyMiddle());
+				group.addChild(coordBoxes.get(i));
+				if (inline) coordRow.addChild(group);
+				else editorContent.addChild(group);
+			}
+			if (inline) editorContent.addChild(coordRow);
 
 			editorContent.addChild(label(COLOR_LABEL), s -> s.paddingTop(2));
 			GridLayout swatchGrid = new GridLayout().spacing(SWATCH_GAP);
@@ -337,11 +521,17 @@ public class WaypointScreen extends Screen {
 				row1.addChild(logoTypeButton);
 				editorContent.addChild(row1, s -> s.paddingTop(4));
 
+				if (logoDetail != null) {
+					// The block button sits under "Logo", in the right column.
+					LinearLayout logoRow = LinearLayout.horizontal().spacing(COLUMN_GAP);
+					logoRow.addChild(SpacerElement.width(styleButton.getWidth()));
+					logoRow.addChild(logoDetail);
+					editorContent.addChild(logoRow);
+				}
+
 				LinearLayout row2 = LinearLayout.horizontal().spacing(COLUMN_GAP);
-				// Logo: None has no block button; a spacer keeps "Visible" in the right column.
-				if (logoDetail != null) row2.addChild(logoDetail);
-				else row2.addChild(SpacerElement.width(logoBlockButton.getWidth()));
 				row2.addChild(visibleButton);
+				row2.addChild(showTextButton);
 				editorContent.addChild(row2);
 
 				if (highlight) {
@@ -359,6 +549,7 @@ public class WaypointScreen extends Screen {
 					editorContent.addChild(throughBlocksBox);
 				}
 				editorContent.addChild(visibleButton);
+				editorContent.addChild(showTextButton);
 			}
 			if (w.isClump()) {
 				editorContent.addChild(label(Component.translatable("waypy.gui.clump_info", w.size())), s -> s.paddingTop(2));
@@ -395,25 +586,46 @@ public class WaypointScreen extends Screen {
 		}
 	}
 
-	private void confirmDelete() {
+	/** Deletes the selected waypoint at once (no confirmation: Undo restores it for 15 s) and selects a neighbour. */
+	public void deleteSelected() {
 		Waypoint w = selected;
 		if (w == null) return;
-		minecraft.gui.setScreen(new ConfirmScreen(
-				confirmed -> {
-					if (confirmed) {
-						List<Waypoint> all = manager.all();
-						int index = all.indexOf(w);
-						manager.remove(w.id);
-						List<Waypoint> rest = manager.all();
-						selected = rest.isEmpty() ? null : rest.get(Math.min(Math.max(index, 0), rest.size() - 1));
-						if (selected != null) manager.select(selected.id);
-					}
-					minecraft.gui.setScreen(this);
-				},
-				Component.translatable("waypy.gui.delete.title"),
-				Component.translatable("waypy.gui.delete.message", w.name),
-				Component.translatable("selectWorld.deleteButton"),
-				CommonComponents.GUI_CANCEL));
+		List<Waypoint> all = manager.all();
+		int index = all.indexOf(w);
+		manager.remove(w.id);
+		List<Waypoint> rest = manager.all();
+		selected = rest.isEmpty() ? null : rest.get(Math.min(Math.max(index, 0), rest.size() - 1));
+		manager.select(selected != null ? selected.id : null);
+		rebuildWidgets();
+	}
+
+	/** Restores the most recent deletion (if its blocks are still free) and selects it. */
+	public void undoDelete() {
+		Optional<WaypointManager.DeletedWaypoint> offer = manager.lastDeleted();
+		if (offer.isEmpty()) return;
+		Waypoint restored = manager.restore(offer.get().waypoint().id);
+		if (restored == null) {
+			updateUndoButton(true);
+			return;
+		}
+		selected = restored;
+		manager.select(restored.id);
+		rebuildWidgets();
+	}
+
+	/** The waypoint being edited, if any. */
+	public @Nullable Waypoint selectedWaypoint() {
+		return selected;
+	}
+
+	/** The Undo button (null before init). For the devtest. */
+	public @Nullable Button undoButton() {
+		return undoButton;
+	}
+
+	/** The X, Y and Z boxes of the editor (empty without a selection). For the devtest. */
+	public List<EditBox> coordinateBoxes() {
+		return List.copyOf(coordBoxes);
 	}
 
 	@Override

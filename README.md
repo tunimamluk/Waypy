@@ -20,23 +20,30 @@ Put the jar in your `.minecraft/mods` folder.
 | Key | Action |
 |---|---|
 | `N` | Create a waypoint on the block you stand on. On a block that already belongs to a waypoint, delete that waypoint instead |
+| `N` again within 15 s | Undo a delete: press `N` on any block of the waypoint you just deleted to bring it back exactly as it was |
 | Hold `N` and walk | Grow a clump: every block you walk over joins the waypoint (up to 256 blocks; blocks of other waypoints are skipped) |
-| `Shift` + `N` | Create (or delete) a waypoint on the block you look at, up to 512 blocks away. Hold it and sweep the crosshair to paint a clump |
+| `Left Shift` + `N` | Create (or delete, or undo) a waypoint on the block you look at, up to 512 blocks away. Hold it and sweep the crosshair to paint a clump |
 | `M` | Open the Waypy menu |
 
-A clump is one waypoint made of several blocks: Block Selection draws it as one merged shape, Beacon draws one beam from its middle, and the logo floats above its centre. Pressing `N` on any of its blocks deletes the whole clump.
+A clump is one waypoint made of several blocks. It is always drawn as Block Selection (one merged shape), with the logo floating above its centre. Pressing `N` on any of its blocks deletes the whole clump.
 
-Keys can be rebound under Controls → Waypy.
+Creating a waypoint is silent. Deleting one shows `Waypoint "<name>" removed – press N to undo` for 15 seconds. The waypoint can't come back if another waypoint has taken one of its blocks in the meantime, and leaving the world makes deletions final.
+
+All three keys can be rebound under Options → Controls → Key Binds → Waypy: "Create / Delete Waypoint (hold for clump)" (`N`), "Look-at Modifier (hold with Create)" (`Left Shift`; sharing it with Sneak works) and "Open Waypoint Menu" (`M`).
 
 ## Menu
 
 The menu lists the waypoints of the current world on the left and edits the selected one on the right. Each waypoint has:
 
 - a name and a color (16 dye swatches or a hex `#RRGGBB` value)
-- a style: **Beacon** (a beam up to build height) or **Block Selection** (a tinted box with an outline)
-- a logo shown above the waypoint: a **Block** icon you pick from a list (by default the block the waypoint is on), or **None** for just the label
-- for Block Selection, an opacity slider and a "Render through blocks" option
+- its position: X, Y and Z boxes under the name. Typing moves the waypoint (a whole clump moves with its first block). Invalid numbers, or a move onto another waypoint's blocks, show red and aren't applied. Y stays within the build height
+- a style: **Block Selection** (a tinted box with an outline; the default) or **Beacon** (a beam up to build height; single blocks only, so the button is greyed out for clumps)
+- a logo shown above the waypoint: a **Block** icon you pick from a list (by default the block the waypoint is on), or **None**
+- a **Text** toggle for the name and distance under the logo (off for new waypoints)
+- for Block Selection, an opacity slider and a "Render through blocks" option (off by default)
 - a Visible toggle
+
+**Delete** removes the selected waypoint right away; an **Undo** button appears next to it for 15 seconds.
 
 Clumps show their block count in the list and in the editor.
 
@@ -50,9 +57,9 @@ Open them with the **Settings...** button at the top right of the menu. They app
 |---|---|---|
 | Waypoint Render Distance | 512 blocks | Beacon beams and block highlights farther away are not drawn; the logo and label stay. 16–4096 blocks or Unlimited. |
 | Icon Size | 100% | Size of logos and labels, 50–200%. |
-| Shrink with Distance | ON | Logos and labels shrink from full size at 16 blocks to the minimum size at 256 blocks. Labels never get smaller than 50%. |
+| Shrink with Distance | ON | Logos and labels shrink smoothly from full size at 16 blocks to the minimum size at 256 blocks. Labels never get smaller than 50%. |
 | Minimum Size | 50% | Size of far logos when shrinking, 25–100%. |
-| Labels | Always | Always, Looking At (only the waypoint nearest the crosshair) or Off. |
+| Labels | Always | Always, Looking At (only the waypoint nearest the crosshair) or Off. Applies to waypoints whose Text is on. Labels fade in and out. |
 | Distance in Label | ON | Show the distance after the name. |
 
 Settings are saved in `<.minecraft>/config/waypy.json`.

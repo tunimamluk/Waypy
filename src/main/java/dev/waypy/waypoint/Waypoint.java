@@ -22,7 +22,8 @@ import net.minecraft.world.phys.Vec3;
  *
  * <p>The blocks are encapsulated: ordered (first added first), unique and never empty. The first block is the
  * {@link #anchor()}. Blocks are added only through {@link WaypointManager#addBlock}, which keeps the manager's
- * block index in sync. Every change bumps {@link #version()}, so renderers can cache geometry built from the blocks.
+ * block index in sync, and moved only through {@link WaypointManager#move}. Every change bumps {@link #version()}, so
+ * renderers can cache geometry built from the blocks.
  */
 public final class Waypoint {
 	public static final int MAX_NAME_LENGTH = 32;
@@ -36,15 +37,18 @@ public final class Waypoint {
 	public ResourceKey<Level> dimension;
 	/** 0xRRGGBB (no alpha). */
 	public int color;
-	public WaypointStyle style = WaypointStyle.BEACON;
+	/** New waypoints default to {@link WaypointStyle#BLOCK_HIGHLIGHT}. A clump is always BLOCK_HIGHLIGHT (see {@link #isBeacon()}). */
+	public WaypointStyle style = WaypointStyle.BLOCK_HIGHLIGHT;
 	public LogoType logoType = LogoType.BLOCK;
 	/** Item/block id used when {@link #logoType} is {@link LogoType#BLOCK}; kept while the logo is NONE. */
 	public Identifier logoBlock;
 	/** 0..1, {@link WaypointStyle#BLOCK_HIGHLIGHT} only. */
 	public float highlightOpacity = 0.4f;
 	/** {@link WaypointStyle#BLOCK_HIGHLIGHT} only: render without depth test. */
-	public boolean throughBlocks = true;
+	public boolean throughBlocks = false;
 	public boolean visible = true;
+	/** Show the name/distance label under the logo (if the global Labels setting allows it). Off for new waypoints. */
+	public boolean showText = false;
 
 	private final List<BlockPos> blocks = new ArrayList<>();
 	private final List<BlockPos> blocksView = Collections.unmodifiableList(blocks);
@@ -55,8 +59,6 @@ public final class Waypoint {
 	private int derivedVersion = -1;
 	private Vec3 centre = Vec3.ZERO;
 	private int topY;
-	private BlockPos beamBlock = BlockPos.ZERO;
-	private int beamColumnTopY;
 	private AABB bounds = new AABB(BlockPos.ZERO);
 
 	public Waypoint(UUID id, String name, BlockPos pos, ResourceKey<Level> dimension, int color, Identifier logoBlock) {
@@ -107,6 +109,14 @@ public final class Waypoint {
 		return blocks.size() > 1;
 	}
 
+	/**
+	 * True if this waypoint draws a beacon beam: style {@link WaypointStyle#BEACON} and a single block. A clump is never
+	 * a beacon; the manager forces it to {@link WaypointStyle#BLOCK_HIGHLIGHT} when it grows and on load.
+	 */
+	public boolean isBeacon() {
+		return style == WaypointStyle.BEACON && !isClump();
+	}
+
 	public boolean contains(BlockPos pos) {
 		return blockSet.contains(pos);
 	}
@@ -126,6 +136,21 @@ public final class Waypoint {
 		return true;
 	}
 
+	/**
+	 * Moves every block by ({@code dx}, {@code dy}, {@code dz}). Only the manager calls this ({@link WaypointManager#move}),
+	 * which checks for overlaps and re-indexes.
+	 */
+	void translateInternal(int dx, int dy, int dz) {
+		if (dx == 0 && dy == 0 && dz == 0) return;
+		List<BlockPos> moved = new ArrayList<>(blocks.size());
+		for (BlockPos p : blocks) moved.add(p.offset(dx, dy, dz));
+		blocks.clear();
+		blockSet.clear();
+		blocks.addAll(moved);
+		blockSet.addAll(moved);
+		version++;
+	}
+
 	/** Centroid of the block centres. */
 	public Vec3 centre() {
 		derive();
@@ -136,18 +161,6 @@ public final class Waypoint {
 	public int topY() {
 		derive();
 		return topY;
-	}
-
-	/** The block whose centre is nearest the centroid in XZ (ties: the first added). The beacon beam rises from its column. */
-	public BlockPos beamBlock() {
-		derive();
-		return beamBlock;
-	}
-
-	/** Y of the highest block of this waypoint in the {@link #beamBlock()} column: the beam starts on top of it. */
-	public int beamColumnTopY() {
-		derive();
-		return beamColumnTopY;
 	}
 
 	/** Union of the block boxes (not inflated). */
@@ -176,24 +189,6 @@ public final class Waypoint {
 		centre = new Vec3(sx / n, sy / n, sz / n);
 		topY = maxY;
 		bounds = new AABB(minX, minY, minZ, maxX + 1, maxY + 1, maxZ + 1);
-
-		BlockPos best = blocks.getFirst();
-		double bestDistSq = Double.MAX_VALUE;
-		for (BlockPos p : blocks) {
-			double dx = p.getX() + 0.5 - centre.x;
-			double dz = p.getZ() + 0.5 - centre.z;
-			double d = dx * dx + dz * dz;
-			if (d < bestDistSq - 1.0e-9) { // strictly nearer, so ties keep the earlier block
-				best = p;
-				bestDistSq = d;
-			}
-		}
-		beamBlock = best;
-		int columnTop = best.getY();
-		for (BlockPos p : blocks) {
-			if (p.getX() == best.getX() && p.getZ() == best.getZ()) columnTop = Math.max(columnTop, p.getY());
-		}
-		beamColumnTopY = columnTop;
 		derivedVersion = version;
 	}
 

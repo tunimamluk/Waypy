@@ -14,18 +14,21 @@ import dev.waypy.waypoint.WaypointManager;
  *
  * <ul>
  *   <li><b>Idle → press.</b> A click ({@code consumeClick}) while in game starts a hold. The mode is fixed for the
- *       whole hold: Shift held at the press = the looked-at block, else the block stood on. {@link #press}:
+ *       whole hold: the Look-at Modifier ({@code key.waypy.look_modifier}, default Left Shift) held at the press = the
+ *       looked-at block, else the block stood on. {@link #press}:
  *       <ul>
- *         <li>target block in a waypoint of this dimension → that whole waypoint (clump) is removed;</li>
- *         <li>free block → a new waypoint is created there (the clump being built);</li>
+ *         <li>target block in a waypoint of this dimension → that whole waypoint (clump) is removed, restorable for
+ *             {@link WaypointManager#UNDO_WINDOW_MILLIS} ({@code Waypoint "<name>" removed – press N to undo});</li>
+ *         <li>free block that belonged to a waypoint deleted within the undo window, whose blocks are all still free →
+ *             that waypoint is restored unchanged ({@code Waypoint "<name>" restored}); no clump is started;</li>
+ *         <li>other free block → a new waypoint is created there (the clump being built), silently;</li>
  *         <li>no block → nothing.</li>
  *       </ul></li>
  *   <li><b>Holding.</b> Each tick while the key {@code isDown()} and no screen is open, the target block is found
  *       again in the press mode and {@link #extend}ed into the clump: new free blocks are added, blocks of other
  *       waypoints are skipped silently, and at {@link Waypoint#MAX_BLOCKS} the limit message shows once. A hold that
- *       began with a delete (or with no block) has no clump and adds nothing.</li>
- *   <li><b>Release.</b> When the key is up, or a screen is open, the hold ends ({@link #release}); a clump that
- *       grew past one block reports {@code Clump "<name>" created (<n> blocks)}.</li>
+ *       began with a delete, a restore (or with no block) has no clump and adds nothing.</li>
+ *   <li><b>Release.</b> When the key is up, or a screen is open, the hold ends ({@link #release}), silently.</li>
  * </ul>
  *
  * Clicks are always drained, so presses never queue up. Clicks arriving during a hold (OS key repeat) are ignored,
@@ -33,7 +36,7 @@ import dev.waypy.waypoint.WaypointManager;
  */
 public final class CreateKeyHandler {
 	private boolean holding;
-	/** Mode of the current hold: true = looked-at block (Shift+N), false = block stood on. */
+	/** Mode of the current hold: true = looked-at block (modifier + N), false = block stood on. */
 	private boolean lookedAt;
 	/** The clump being built by the current hold; null if the press deleted a waypoint or found no block. */
 	private @Nullable Waypoint clump;
@@ -55,8 +58,8 @@ public final class CreateKeyHandler {
 			return; // clicks during a hold are key repeats
 		}
 		if (clicked && inGame) {
-			boolean shift = client.hasShiftDown();
-			press(client, findTarget(client, shift, true), shift);
+			boolean look = WaypyClient.lookModifierKey.isDown();
+			press(client, findTarget(client, look, true), look);
 			if (!down) release(client); // tapped within one tick
 		}
 	}
@@ -72,11 +75,12 @@ public final class CreateKeyHandler {
 	}
 
 	/**
-	 * Key-down on {@code target}: removes the waypoint containing it, or creates a new waypoint there that the hold
-	 * then extends. Starts a hold (ending any previous one first).
+	 * Key-down on {@code target}: removes the waypoint containing it, restores a recently deleted waypoint that had
+	 * this block, or creates a new waypoint there that the hold then extends. Starts a hold (ending any previous one
+	 * first).
 	 *
 	 * @param lookedAt the hold's mode, used by {@link #tick} to find the target on later ticks
-	 * @return the created waypoint, or null if a waypoint was removed or there is no target
+	 * @return the created waypoint, or null if a waypoint was removed or restored, or there is no target
 	 */
 	public @Nullable Waypoint press(Minecraft client, @Nullable BlockPos target, boolean lookedAt) {
 		release(client);
@@ -90,7 +94,13 @@ public final class CreateKeyHandler {
 		Waypoint existing = manager.waypointAt(target, client.level.dimension());
 		if (existing != null) {
 			manager.remove(existing.id);
-			client.player.sendOverlayMessage(Component.translatable("waypy.message.removed", existing.name));
+			client.player.sendOverlayMessage(Component.translatable("waypy.message.removed", existing.name,
+					WaypyClient.createKey.getTranslatedKeyMessage()));
+			return null;
+		}
+		Waypoint restored = manager.restoreDeletedAt(target, client.level.dimension());
+		if (restored != null) {
+			client.player.sendOverlayMessage(Component.translatable("waypy.message.restored", restored.name));
 			return null;
 		}
 		clump = WaypyClient.createWaypointAt(client, target);
@@ -115,15 +125,10 @@ public final class CreateKeyHandler {
 		}
 	}
 
-	/** Ends the hold; reports the clump if it grew past one block. No-op when not holding. */
+	/** Ends the hold. No-op when not holding. */
 	public void release(Minecraft client) {
-		if (!holding) return;
-		Waypoint w = clump;
 		holding = false;
 		clump = null;
-		if (w != null && w.isClump() && client.player != null && WaypointManager.get().byId(w.id).isPresent()) {
-			client.player.sendOverlayMessage(Component.translatable("waypy.message.clump_created", w.name, w.size()));
-		}
 	}
 
 	private static @Nullable BlockPos findTarget(Minecraft client, boolean lookedAt, boolean report) {

@@ -38,6 +38,12 @@ public final class WaypyClient implements ClientModInitializer {
 
 	public static KeyMapping createKey;
 	public static KeyMapping menuKey;
+	/**
+	 * Held with {@link #createKey} at the press: use the looked-at block instead of the block stood on. Default Left
+	 * Shift. Vanilla keeps every mapping of a key in {@code KeyMapping.MAP} and updates them all, so sharing the key
+	 * with Sneak works: both report {@code isDown()}.
+	 */
+	public static KeyMapping lookModifierKey;
 	/** N key behaviour: create, hold to grow a clump, press on a waypoint to delete it. */
 	public static final CreateKeyHandler CREATE_KEY_HANDLER = new CreateKeyHandler();
 
@@ -47,6 +53,8 @@ public final class WaypyClient implements ClientModInitializer {
 				new KeyMapping("key.waypy.create", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_N, CATEGORY));
 		menuKey = KeyMappingHelper.registerKeyMapping(
 				new KeyMapping("key.waypy.menu", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_M, CATEGORY));
+		lookModifierKey = KeyMappingHelper.registerKeyMapping(
+				new KeyMapping("key.waypy.look_modifier", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_LEFT_SHIFT, CATEGORY));
 
 		WaypyConfig.load();
 
@@ -70,7 +78,7 @@ public final class WaypyClient implements ClientModInitializer {
 
 	/**
 	 * Creates a waypoint at the block the player stands on ({@code lookedAt == false}) or at the block the
-	 * camera looks at, selects it and shows the action-bar message. Used by the menu's "+ New here" button.
+	 * camera looks at and selects it. Used by the menu's "+ New here" button.
 	 *
 	 * @return the new waypoint, or null if there is no player/level or no block was found
 	 */
@@ -82,8 +90,8 @@ public final class WaypyClient implements ClientModInitializer {
 	}
 
 	/**
-	 * Creates a waypoint on {@code pos} with the default settings (logo = the block's item), selects it and shows
-	 * {@code Waypoint "<name>" created}. Shared by the N key and the menu's "+ New here".
+	 * Creates a waypoint on {@code pos} with the default settings (logo = the block's item) and selects it, silently.
+	 * Shared by the N key and the menu's "+ New here".
 	 */
 	public static @Nullable Waypoint createWaypointAt(Minecraft client, BlockPos pos) {
 		if (client.player == null || client.level == null) return null;
@@ -93,7 +101,6 @@ public final class WaypyClient implements ClientModInitializer {
 		WaypointManager manager = WaypointManager.get();
 		Waypoint waypoint = manager.create(pos, client.level.dimension(), logo);
 		manager.select(waypoint.id);
-		client.player.sendOverlayMessage(Component.translatable("waypy.message.created", waypoint.name));
 		return waypoint;
 	}
 
