@@ -1,0 +1,16 @@
+{
+	"schemaVersion": 1,
+	"id": "waypy-devtest",
+	"version": "0.0.0",
+	"name": "Waypy devtest harness",
+	"description": "Dev-only headless screenshot scenario. Never shipped.",
+	"license": "MIT",
+	"environment": "client",
+	"entrypoints": {
+		"client": ["dev.waypy.devtest.DevtestClient"]
+	},
+	"depends": {
+		"waypy": "*",
+		"fabric-api": "*"
+	}
+}
