@@ -4,6 +4,7 @@ import java.util.List;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.mojang.math.Axis;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.joml.Vector4f;
@@ -16,10 +17,14 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.blockentity.BeaconRenderer;
 import net.minecraft.client.renderer.feature.CustomFeatureRenderer;
+import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
+import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.ARGB;
+import net.minecraft.util.LightCoordsUtil;
+import net.minecraft.util.Mth;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -44,6 +49,8 @@ final class WorldWaypointRenderer {
 	static final float OUTLINE_WIDTH_SCALE = 1.5f;
 	/** Lines whose end is closer than this to the camera plane are clipped (as vanilla gizmos do). */
 	private static final float NEAR_CLIP = -0.05f;
+	/** Far beams are clamped so their farthest point stays within this fraction of the camera's far plane. */
+	private static final double FAR_PLANE_MARGIN = 0.9;
 
 	private WorldWaypointRenderer() {
 	}
@@ -66,7 +73,7 @@ final class WorldWaypointRenderer {
 
 		for (Waypoint waypoint : waypoints) {
 			if (waypoint.style == WaypointStyle.BEACON) {
-				submitBeam(waypoint, level, camera, poseStack, collector, maxDistance, animationTime, scoping);
+				submitBeam(waypoint, level, camera, poseStack, collector, animationTime, scoping);
 			} else {
 				submitHighlight(minecraft, waypoint, camera, poseStack, collector, maxDistance);
 			}
@@ -76,40 +83,113 @@ final class WorldWaypointRenderer {
 	// ---------------------------------------------------------------- beacon beam
 
 	private static void submitBeam(Waypoint waypoint, ClientLevel level, CameraRenderState camera, PoseStack poseStack,
-			SubmitNodeCollector collector, double maxDistance, float animationTime, boolean scoping) {
+			SubmitNodeCollector collector, float animationTime, boolean scoping) {
 		BlockPos pos = waypoint.pos;
 		// The beam starts on top of the waypoint block (so a solid block doesn't hide its base)
-		// and ends at the build limit.
+		// and ends at the build limit. Only the position is used, so the chunk need not be loaded.
 		int beamBottom = pos.getY() + 1;
 		int beamTop = level.getMaxY() + 1;
 		int height = beamTop - beamBottom;
 		if (height <= 0) return;
 
 		Vec3 cam = camera.pos;
-		double dx = pos.getX() + 0.5 - cam.x;
-		double dz = pos.getZ() + 0.5 - cam.z;
+		double relX = pos.getX() - cam.x;
+		double relY = pos.getY() - cam.y;
+		double relZ = pos.getZ() - cam.z;
+		double dx = relX + 0.5;
+		double dz = relZ + 0.5;
 		float horizontalDistance = (float) Math.sqrt(dx * dx + dz * dz);
-		if (horizontalDistance > maxDistance) return;
 
 		// Same widening as BeaconRenderer.extract: far beams get thicker so they stay visible.
 		float radiusScale = scoping ? 1.0f : Math.max(1.0f, horizontalDistance / BEAM_SCALE_DISTANCE);
 		float solidRadius = BeaconRenderer.SOLID_BEAM_RADIUS * radiusScale;
 		float glowRadius = BeaconRenderer.BEAM_GLOW_RADIUS * radiusScale;
 
+		// Near beams (inside the render-distance fog) are vanilla in every respect. Beams past the
+		// start of that fog draw without fog, and if any part of them would lie beyond the far plane
+		// the whole beam is scaled down uniformly about the camera: every vertex stays on the same
+		// view ray, so on screen it looks exactly like the unclamped beam, just nearer in depth.
+		boolean far = horizontalDistance > camera.fogData.renderDistanceStart;
+		double scale = 1.0;
+		if (far) {
+			double topDy = beamTop - cam.y;
+			double bottomDy = beamBottom - cam.y;
+			double maxDy = Math.max(Math.abs(topDy), Math.abs(bottomDy));
+			double farthest = Math.sqrt((double) horizontalDistance * horizontalDistance + maxDy * maxDy) + glowRadius * 1.5;
+			double limit = camera.depthFar * FAR_PLANE_MARGIN;
+			if (farthest > limit) scale = limit / farthest;
+		}
+
 		// The beam rotates around the block center, so a square of 2*glowRadius*sqrt(2) bounds it.
+		// Culled with the (possibly clamped) camera-relative bounds, offset back to world space.
 		double extent = glowRadius * 1.5;
 		AABB bounds = new AABB(
-				pos.getX() + 0.5 - extent, beamBottom, pos.getZ() + 0.5 - extent,
-				pos.getX() + 0.5 + extent, beamTop, pos.getZ() + 0.5 + extent);
+				(dx - extent) * scale + cam.x, (beamBottom - cam.y) * scale + cam.y, (dz - extent) * scale + cam.z,
+				(dx + extent) * scale + cam.x, (beamTop - cam.y) * scale + cam.y, (dz + extent) * scale + cam.z);
 		if (!camera.cullFrustum.isVisible(bounds)) return;
 
+		int color = ARGB.opaque(waypoint.color);
 		poseStack.pushPose();
-		poseStack.translate(pos.getX() - cam.x, pos.getY() - cam.y, pos.getZ() - cam.z);
-		// Exactly what vanilla's beacon block entity submits for its last beam section:
-		// opaque scrolling core (BEACON_BEAM_OPAQUE) + translucent glow with alpha 32 (BEACON_BEAM_TRANSLUCENT).
-		BeaconRenderer.submitBeaconBeam(poseStack, collector, BeaconRenderer.BEAM_LOCATION, 1.0f, animationTime,
-				1, height, ARGB.opaque(waypoint.color), solidRadius, glowRadius);
+		poseStack.translate(relX * scale, relY * scale, relZ * scale);
+		if (scale != 1.0) poseStack.scale((float) scale, (float) scale, (float) scale);
+		if (far) {
+			submitBeamGeometry(poseStack, collector, WaypyRenderTypes.BEACON_BEAM_NO_FOG_OPAQUE,
+					WaypyRenderTypes.BEACON_BEAM_NO_FOG_TRANSLUCENT, animationTime, height, color, solidRadius, glowRadius);
+		} else {
+			// Exactly what vanilla's beacon block entity submits for its last beam section:
+			// opaque scrolling core (BEACON_BEAM_OPAQUE) + translucent glow with alpha 32 (BEACON_BEAM_TRANSLUCENT).
+			BeaconRenderer.submitBeaconBeam(poseStack, collector, BeaconRenderer.BEAM_LOCATION, 1.0f, animationTime,
+					1, height, color, solidRadius, glowRadius);
+		}
 		poseStack.popPose();
+	}
+
+	/**
+	 * Geometry identical to {@code BeaconRenderer.submitBeaconBeam(..., scale 1, beamStart 1, ...)}, but with the
+	 * render types supplied (the fog-free ones). Vanilla's {@code renderPart}/{@code renderQuad} are private.
+	 */
+	private static void submitBeamGeometry(PoseStack poseStack, SubmitNodeCollector collector, RenderType opaque,
+			RenderType translucent, float animationTime, int height, int color, float solidRadius, float glowRadius) {
+		int beamStart = 1;
+		int beamEnd = beamStart + height;
+		poseStack.pushPose();
+		poseStack.translate(0.5, 0.0, 0.5);
+		float scroll = -animationTime;
+		float texVOff = Mth.frac(scroll * 0.2F - Mth.floor(scroll * 0.1F));
+		poseStack.pushPose();
+		poseStack.mulPose(Axis.YP.rotationDegrees(animationTime * 2.25F - 45.0F));
+		float r = solidRadius;
+		float vv2 = -1.0F + texVOff;
+		float solidV1 = height * (0.5F / solidRadius) + vv2;
+		collector.submitCustomGeometry(poseStack, opaque, (pose, buffer) -> beamPart(pose, buffer, color, beamStart, beamEnd,
+				0.0F, r, r, 0.0F, -r, 0.0F, 0.0F, -r, solidV1, vv2));
+		poseStack.popPose();
+		float g = glowRadius;
+		float glowV1 = height + vv2;
+		collector.submitCustomGeometry(poseStack, translucent, (pose, buffer) -> beamPart(pose, buffer, ARGB.color(32, color),
+				beamStart, beamEnd, -g, -g, g, -g, -g, g, g, g, glowV1, vv2));
+		poseStack.popPose();
+	}
+
+	private static void beamPart(PoseStack.Pose pose, VertexConsumer buffer, int color, int beamStart, int beamEnd,
+			float wnx, float wnz, float enx, float enz, float wsx, float wsz, float esx, float esz, float vv1, float vv2) {
+		beamQuad(pose, buffer, color, beamStart, beamEnd, wnx, wnz, enx, enz, vv1, vv2);
+		beamQuad(pose, buffer, color, beamStart, beamEnd, esx, esz, wsx, wsz, vv1, vv2);
+		beamQuad(pose, buffer, color, beamStart, beamEnd, enx, enz, esx, esz, vv1, vv2);
+		beamQuad(pose, buffer, color, beamStart, beamEnd, wsx, wsz, wnx, wnz, vv1, vv2);
+	}
+
+	private static void beamQuad(PoseStack.Pose pose, VertexConsumer buffer, int color, int beamStart, int beamEnd,
+			float ax, float az, float bx, float bz, float vv1, float vv2) {
+		beamVertex(pose, buffer, color, beamEnd, ax, az, 1.0F, vv1);
+		beamVertex(pose, buffer, color, beamStart, ax, az, 1.0F, vv2);
+		beamVertex(pose, buffer, color, beamStart, bx, bz, 0.0F, vv2);
+		beamVertex(pose, buffer, color, beamEnd, bx, bz, 0.0F, vv1);
+	}
+
+	private static void beamVertex(PoseStack.Pose pose, VertexConsumer buffer, int color, int y, float x, float z, float u, float v) {
+		buffer.addVertex(pose, x, y, z).setColor(color).setUv(u, v).setOverlay(OverlayTexture.NO_OVERLAY)
+				.setLight(LightCoordsUtil.FULL_BRIGHT).setNormal(pose, 0.0F, 1.0F, 0.0F);
 	}
 
 	// ---------------------------------------------------------------- block highlight

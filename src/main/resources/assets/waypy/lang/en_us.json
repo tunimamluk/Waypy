@@ -23,6 +23,8 @@
   "waypy.gui.logo.block": "Block",
   "waypy.gui.logo.text": "Text",
   "waypy.gui.logo_text": "Logo text",
+  "waypy.gui.logo_text.hint": "Logo text",
+  "waypy.gui.logo_text.tooltip": "Text shown as the logo, up to %s characters",
   "waypy.gui.logo_block.tooltip": "Click to choose a block",
   "waypy.gui.opacity": "Opacity",
   "waypy.gui.through_blocks": "Render through blocks",

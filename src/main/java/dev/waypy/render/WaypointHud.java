@@ -3,6 +3,7 @@ package dev.waypy.render;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -43,6 +44,10 @@ import dev.waypy.waypoint.WaypointStyle;
  * projection * bobbing * view-rotation matrix the level is rendered with, then the logo and
  * label are drawn there at a constant on-screen size. Being HUD, it is always on top of the
  * world (visible through blocks) and never clipped by the far plane.
+ *
+ * <p>Logos always draw. Labels are decluttered: when two label rectangles would overlap, the label of
+ * the waypoint farther from the camera is hidden. The label of the marker nearest the crosshair (within
+ * {@link #FOCUS_RADIUS} GUI px) always shows and is drawn on top.
  */
 final class WaypointHud implements HudElement {
 	/** Logo anchor height above the top face of a BLOCK_HIGHLIGHT waypoint, in blocks. */
@@ -63,6 +68,10 @@ final class WaypointHud implements HudElement {
 	private static final float LABEL_BACKGROUND_OPACITY = 0.4f;
 	/** Points closer than this (view-space w) to the camera plane are treated as behind the camera. */
 	private static final float MIN_CLIP_W = 0.05f;
+	/** The marker nearest the screen centre within this many GUI pixels always shows its label. */
+	private static final float FOCUS_RADIUS = 40.0f;
+	/** Extra spacing kept between label rectangles, in GUI pixels. */
+	private static final int LABEL_MARGIN = 1;
 
 	private final Map<Identifier, ItemStack> logoStacks = new HashMap<>();
 	private final Matrix4f viewProjection = new Matrix4f();
@@ -110,20 +119,82 @@ final class WaypointHud implements HudElement {
 		}
 		if (markers.isEmpty()) return;
 
-		// Far first, so nearer markers draw on top.
-		markers.sort(Comparator.comparingDouble(Marker::distance).reversed());
 		Font font = minecraft.font;
 		int labelBackground = minecraft.options.getBackgroundColor(LABEL_BACKGROUND_OPACITY);
+
+		// The marker nearest the crosshair (if close enough) always shows its label, on top of everything.
+		float centerX = guiWidth / 2.0f;
+		float centerY = guiHeight / 2.0f;
+		Marker focused = null;
+		float focusedDistSq = FOCUS_RADIUS * FOCUS_RADIUS;
 		for (Marker marker : markers) {
-			drawMarker(graphics, font, marker, labelBackground);
+			float ddx = marker.x() - centerX;
+			float ddy = marker.y() - centerY;
+			float distSq = ddx * ddx + ddy * ddy;
+			if (distSq <= focusedDistSq) {
+				focused = marker;
+				focusedDistSq = distSq;
+			}
+		}
+
+		// Label decluttering, nearest first: a label whose rectangle overlaps one already accepted is hidden,
+		// so on a collision the waypoint farther from the camera loses. The focused label is placed first.
+		markers.sort(Comparator.comparingDouble(Marker::distance));
+		List<Label> accepted = new ArrayList<>(markers.size());
+		Map<Marker, Label> shown = new IdentityHashMap<>();
+		if (focused != null) {
+			Label label = label(font, focused);
+			accepted.add(label);
+			shown.put(focused, label);
+		}
+		for (Marker marker : markers) {
+			if (marker == focused) continue;
+			Label label = label(font, marker);
+			boolean overlaps = false;
+			for (Label other : accepted) {
+				if (label.overlaps(other)) {
+					overlaps = true;
+					break;
+				}
+			}
+			if (overlaps) continue;
+			accepted.add(label);
+			shown.put(marker, label);
+		}
+
+		// Paint far to near, so nearer logos (and labels) draw on top; the focused label goes last.
+		for (int i = markers.size() - 1; i >= 0; i--) {
+			Marker marker = markers.get(i);
+			drawLogo(graphics, font, marker);
+			Label label = shown.get(marker);
+			if (label != null && marker != focused) drawLabel(graphics, font, label, labelBackground);
+		}
+		if (focused != null) drawLabel(graphics, font, shown.get(focused), labelBackground);
+	}
+
+	/** A name/distance label and its on-screen rectangle (background included), in GUI coordinates. */
+	private record Label(Component text, float x, float y, int width, float left, float top, float right, float bottom) {
+		boolean overlaps(Label o) {
+			return left < o.right && o.left < right && top < o.bottom && o.top < bottom;
 		}
 	}
 
-	private void drawMarker(GuiGraphicsExtractor graphics, Font font, Marker marker, int labelBackground) {
+	private static Label label(Font font, Marker marker) {
+		Waypoint waypoint = marker.waypoint();
+		Component text = Component.translatable("waypy.render.label", waypoint.name, String.valueOf((int) Math.floor(marker.distance())));
+		int width = font.width(text);
+		int left = -width / 2;
+		int top = LOGO_HALF_HEIGHT + LABEL_GAP + 1;
+		// Background rectangle as drawn by drawLabel, plus a 1 px margin so labels never touch.
+		return new Label(text, marker.x(), marker.y(), width,
+				marker.x() + left - 2 - LABEL_MARGIN, marker.y() + top - 2 - LABEL_MARGIN,
+				marker.x() + left + width + 1 + LABEL_MARGIN, marker.y() + top + font.lineHeight + LABEL_MARGIN);
+	}
+
+	private void drawLogo(GuiGraphicsExtractor graphics, Font font, Marker marker) {
 		Waypoint waypoint = marker.waypoint();
 		graphics.pose().pushMatrix();
 		graphics.pose().translate(marker.x(), marker.y());
-
 		if (waypoint.logoType == LogoType.TEXT) {
 			String text = logoText(waypoint);
 			int width = font.width(text);
@@ -137,16 +208,18 @@ final class WaypointHud implements HudElement {
 		} else {
 			graphics.item(logoStack(waypoint.logoBlock), -8, -LOGO_HALF_HEIGHT);
 		}
+		graphics.pose().popMatrix();
+	}
 
-		Component label = Component.translatable("waypy.render.label", waypoint.name, String.valueOf((int) Math.floor(marker.distance())));
-		int labelWidth = font.width(label);
-		int labelLeft = -labelWidth / 2;
+	private static void drawLabel(GuiGraphicsExtractor graphics, Font font, Label label, int labelBackground) {
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(label.x(), label.y());
+		int labelLeft = -label.width() / 2;
 		int labelTop = LOGO_HALF_HEIGHT + LABEL_GAP + 1;
 		if (ARGB.alpha(labelBackground) != 0) {
-			graphics.fill(labelLeft - 2, labelTop - 2, labelLeft + labelWidth + 1, labelTop + font.lineHeight, labelBackground);
+			graphics.fill(labelLeft - 2, labelTop - 2, labelLeft + label.width() + 1, labelTop + font.lineHeight, labelBackground);
 		}
-		graphics.text(font, label, labelLeft, labelTop, 0xFFFFFFFF, false);
-
+		graphics.text(font, label.text(), labelLeft, labelTop, 0xFFFFFFFF, false);
 		graphics.pose().popMatrix();
 	}
 

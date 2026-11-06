@@ -35,6 +35,8 @@ import dev.waypy.waypoint.WaypointStyle;
  *   <li>"Text Beacon": BEACON, TEXT logo "HQ", light blue, on a lapis block ~64 blocks away on the left.</li>
  *   <li>"Hidden Cache": BLOCK_HIGHLIGHT, throughBlocks=true, lime, behind a stone-brick wall ~24 blocks ahead.</li>
  *   <li>"Gold Block": BLOCK_HIGHLIGHT, throughBlocks=false, TEXT logo "AU", orange, on a gold block ~13 blocks ahead on the left.</li>
+ *   <li>"Far Beacon": BEACON, BLOCK logo, purple, ~200 blocks ahead, far outside the render distance (its chunk is
+ *       not loaded), to check that far beams are drawn without fog.</li>
  * </ul>
  */
 final class Scenario {
@@ -59,6 +61,7 @@ final class Scenario {
 	private Waypoint beaconText;
 	private Waypoint highlightThrough;
 	private Waypoint highlightSolid;
+	private Waypoint farBeacon;
 
 	Scenario(Minecraft mc) {
 		this.mc = mc;
@@ -183,6 +186,12 @@ final class Scenario {
 		highlightSolid.setLogoText("AU");
 		highlightSolid.throughBlocks = false;
 		highlightSolid.highlightOpacity = 0.6f;
+
+		farBeacon = wm.create(new BlockPos(10, FEET_Y, 200), dim, Identifier.withDefaultNamespace("amethyst_block"));
+		farBeacon.setName("Far Beacon");
+		farBeacon.color = 0x8932B8;
+		farBeacon.style = WaypointStyle.BEACON;
+		farBeacon.logoType = LogoType.BLOCK;
 
 		wm.select(beaconBlock.id);
 		wm.markDirty();

@@ -59,6 +59,8 @@ public class WaypointScreen extends Screen {
 	private static final Component STYLE_LABEL = Component.translatable("waypy.gui.style");
 	private static final Component LOGO_LABEL = Component.translatable("waypy.gui.logo");
 	private static final Component LOGO_TEXT_LABEL = Component.translatable("waypy.gui.logo_text");
+	private static final Component LOGO_TEXT_HINT = Component.translatable("waypy.gui.logo_text.hint");
+	private static final Component LOGO_TEXT_TOOLTIP = Component.translatable("waypy.gui.logo_text.tooltip", Waypoint.MAX_LOGO_TEXT_LENGTH);
 	private static final Component LOGO_BLOCK_TOOLTIP = Component.translatable("waypy.gui.logo_block.tooltip");
 	private static final Component OPACITY_LABEL = Component.translatable("waypy.gui.opacity");
 	private static final Component THROUGH_BLOCKS_LABEL = Component.translatable("waypy.gui.through_blocks");
@@ -258,8 +260,8 @@ public class WaypointScreen extends Screen {
 			logoTextBox = new EditBox(font, half, Button.DEFAULT_HEIGHT, LOGO_TEXT_LABEL);
 			logoTextBox.setMaxLength(Waypoint.MAX_LOGO_TEXT_LENGTH);
 			logoTextBox.setValue(w.logoText);
-			logoTextBox.setHint(LOGO_TEXT_LABEL.copy().withStyle(ChatFormatting.DARK_GRAY));
-			logoTextBox.setTooltip(Tooltip.create(LOGO_TEXT_LABEL));
+			logoTextBox.setHint(LOGO_TEXT_HINT.copy().withStyle(ChatFormatting.DARK_GRAY));
+			logoTextBox.setTooltip(Tooltip.create(LOGO_TEXT_TOOLTIP));
 			logoTextBox.setResponder(value -> {
 				w.setLogoText(value);
 				manager.markDirty();

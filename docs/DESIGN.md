@@ -50,8 +50,10 @@ Storage: `<gameDir>/waypy/<worldKey>.json` (Gson). `worldKey` = sanitized single
 Only waypoints with `visible == true` in the player's current dimension.
 
 - **BEACON**: vanilla-looking beacon beam (vanilla beam texture, tinted with `color`) from the waypoint block up to the build height. Vanilla depth behaviour, so terrain hides it the way it hides a real beam.
+  - Not limited by render distance and independent of chunk loading. Beams past the start of the render-distance fog use a fog-free copy of the vanilla beam pipeline (`waypy:core/beacon_beam_no_fog`); beams that would reach past the camera's far plane are scaled uniformly about the camera so they stay on the same view rays.
 - **BLOCK_HIGHLIGHT**: a tinted filled box over the block at `highlightOpacity`, plus a solid outline in `color`. If `throughBlocks`, both draw without depth testing (visible through terrain).
 - **Logo** (both styles): a camera-facing billboard floating above the waypoint (above the block for highlight, a few blocks above it for beacon). It is always visible through blocks and scales with distance so it stays readable. Below it is a small label: `name` and distance in metres.
+  - Labels never overlap: on a collision the label of the waypoint farther from the camera is hidden. The label of the marker nearest the crosshair (within 40 GUI px) is always shown, on top.
   - `BLOCK` logo → the item icon of `logoBlock`.
   - `TEXT` logo → `logoText` in the waypoint color with a dark backing plate.
 
