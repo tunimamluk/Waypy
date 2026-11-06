@@ -11,7 +11,6 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
-import java.util.Iterator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -58,13 +57,14 @@ import net.minecraft.world.level.storage.LevelResource;
  *
  * <p>All public methods are synchronized; list getters return immutable snapshots, but the
  * {@link Waypoint} objects themselves are live and may be mutated (then call {@link #markDirty()}).
- * Blocks are added to a waypoint only through {@link #addBlock} and moved only through {@link #move}, which keep the
- * per-dimension block index ({@link #waypointAt}) in sync.
+ * Blocks are added to a waypoint only through {@link #addBlock} (or an undo), removed only through {@link #removeBlock}
+ * and moved only through {@link #move}, which keep the per-dimension block index ({@link #waypointAt}) in sync.
  *
- * <p><b>Undo:</b> {@link #remove} does not discard a waypoint at once. It leaves the world, the list and the index
- * immediately, but stays restorable for {@link #UNDO_WINDOW_MILLIS} (real time) in a small "recently deleted" stack
- * ({@link #restore}, {@link #restoreDeletedAt}). Pending deletions are never saved (the file is written without them)
- * and become permanent when they expire, on disconnect and on world change.
+ * <p><b>Undo:</b> {@link #remove} does not discard a waypoint at once, and {@link #removeBlock} does not forget the
+ * block. Either leaves the world, the list and the index immediately, but stays undoable for
+ * {@link #UNDO_WINDOW_MILLIS} (real time) in one small "recently undoable" stack of {@link UndoEntry}s, newest first
+ * ({@link #undoAt}, {@link #undo}, {@link #restore}). Pending entries are never saved (the file is written without
+ * them) and become permanent when they expire, on disconnect and on world change.
  */
 public final class WaypointManager {
 	private static final Logger LOGGER = LoggerFactory.getLogger("waypy");
@@ -74,10 +74,10 @@ public final class WaypointManager {
 	/** Ticks between a {@link #markDirty()} and the automatic save. */
 	private static final int SAVE_DELAY_TICKS = 20;
 	public static final Identifier DEFAULT_LOGO = Identifier.withDefaultNamespace("compass");
-	/** How long a deleted waypoint can be restored, in milliseconds of real time. */
+	/** How long a deleted waypoint or a removed block can be restored, in milliseconds of real time. */
 	public static final long UNDO_WINDOW_MILLIS = 15_000L;
-	/** Most deletions kept restorable at once (older ones become permanent early). */
-	private static final int MAX_PENDING_DELETIONS = 8;
+	/** Most undoable actions (deletions and block removals) kept at once (older ones become permanent early). */
+	private static final int MAX_PENDING_UNDO = 16;
 
 	/** Palette new waypoints cycle through: the 16 vanilla dye colors. */
 	private static final int[] PALETTE;
@@ -91,10 +91,13 @@ public final class WaypointManager {
 	}
 
 	private final List<Waypoint> waypoints = new ArrayList<>();
-	/** Per dimension: block -> the (first) waypoint containing it. Kept in sync on add, remove, load and block-add. */
+	/** Per dimension: block -> the (first) waypoint containing it. Kept in sync on add, remove, load, block add/remove and undo. */
 	private final Map<ResourceKey<Level>, Map<BlockPos, Waypoint>> blockIndex = new HashMap<>();
-	/** Recently deleted waypoints, newest first; each restorable until {@link #UNDO_WINDOW_MILLIS} after its deletion. */
-	private final Deque<DeletedWaypoint> recentlyDeleted = new ArrayDeque<>();
+	/**
+	 * Recently deleted waypoints and removed blocks, newest first; each undoable until {@link #UNDO_WINDOW_MILLIS}
+	 * after it happened.
+	 */
+	private final Deque<UndoEntry> recentlyUndoable = new ArrayDeque<>();
 	private final LongSupplier clock = Util::getMillis;
 	private @Nullable UUID selectedId;
 	private @Nullable String worldKey;
@@ -168,7 +171,7 @@ public final class WaypointManager {
 
 	/**
 	 * Removes the waypoint from the world, the list and the index. It stays restorable ({@link #restore},
-	 * {@link #restoreDeletedAt}) for {@link #UNDO_WINDOW_MILLIS}.
+	 * {@link #undoAt}, {@link #undo}) for {@link #UNDO_WINDOW_MILLIS}.
 	 */
 	public synchronized void remove(UUID id) {
 		Optional<Waypoint> removed = byId(id);
@@ -179,38 +182,137 @@ public final class WaypointManager {
 		boolean wasSelected = id.equals(selectedId);
 		if (wasSelected) selectedId = null;
 		reindex(w.dimension);
-		recentlyDeleted.addFirst(new DeletedWaypoint(w, listIndex, wasSelected, clock.getAsLong()));
-		while (recentlyDeleted.size() > MAX_PENDING_DELETIONS) recentlyDeleted.removeLast();
+		pushUndo(new DeletedWaypoint(w, listIndex, wasSelected, clock.getAsLong()));
 		markDirty();
+	}
+
+	/** Result of {@link #removeBlock}. */
+	public enum RemoveBlockResult {
+		REMOVED,
+		/** The block is not one of this waypoint's blocks. */
+		NOT_IN_WAYPOINT,
+		/** It is the waypoint's only block (a waypoint is never empty: {@link #remove} the waypoint instead). */
+		LAST_BLOCK,
+		/** The waypoint is not managed (e.g. it was removed). */
+		UNKNOWN_WAYPOINT
+	}
+
+	/**
+	 * Removes one block from a waypoint with 2+ blocks (the N key's tap on a clump block). The other blocks keep their
+	 * order; removing the anchor makes the next block the anchor. Every other field (logo, style, ...) is unchanged,
+	 * and disconnected parts stay one waypoint. Keeps the index in sync, bumps the version (the highlight mesh
+	 * rebuilds), marks the manager dirty and makes the removal undoable ({@link RemovedBlock}) for
+	 * {@link #UNDO_WINDOW_MILLIS}.
+	 */
+	public synchronized RemoveBlockResult removeBlock(Waypoint waypoint, BlockPos pos) {
+		if (!waypoints.contains(waypoint)) return RemoveBlockResult.UNKNOWN_WAYPOINT;
+		if (!waypoint.contains(pos)) return RemoveBlockResult.NOT_IN_WAYPOINT;
+		if (!waypoint.isClump()) return RemoveBlockResult.LAST_BLOCK;
+		int blockIndex = waypoint.removeBlockInternal(pos);
+		if (blockIndex < 0) return RemoveBlockResult.NOT_IN_WAYPOINT;
+		reindex(waypoint.dimension); // another waypoint may share the block (old files, "+ New here")
+		pushUndo(new RemovedBlock(waypoint.id, waypoint.name, waypoint.dimension, pos.immutable(), blockIndex, clock.getAsLong()));
+		markDirty();
+		return RemoveBlockResult.REMOVED;
 	}
 
 	// ---------------------------------------------------------------- undo
 
-	/** A deleted waypoint that can still be restored: the waypoint itself (id, fields and blocks unchanged). */
-	public record DeletedWaypoint(Waypoint waypoint, int listIndex, boolean wasSelected, long deletedAtMillis) {
+	/**
+	 * An undoable action, kept in one "recently undoable" stack (newest first) for {@link #UNDO_WINDOW_MILLIS}: a whole
+	 * deleted waypoint or one block removed from a waypoint.
+	 */
+	public sealed interface UndoEntry permits DeletedWaypoint, RemovedBlock {
+		/** When the action happened ({@code Util.getMillis()}). */
+		long atMillis();
+
+		ResourceKey<Level> dimension();
+
+		/** The waypoint's name at the time (for messages and tooltips). */
+		String name();
 	}
 
-	/** The most recent deletion that has not expired yet. */
+	/** A deleted waypoint that can still be restored: the waypoint itself (id, fields and blocks unchanged). */
+	public record DeletedWaypoint(Waypoint waypoint, int listIndex, boolean wasSelected, long atMillis) implements UndoEntry {
+		@Override
+		public ResourceKey<Level> dimension() {
+			return waypoint.dimension;
+		}
+
+		@Override
+		public String name() {
+			return waypoint.name;
+		}
+	}
+
+	/**
+	 * A block removed from the waypoint {@code waypointId} (which still exists, with its other blocks), at
+	 * {@code blockIndex} in its block list. Undoing it puts the block back at that index, so a removed anchor becomes
+	 * the anchor again.
+	 */
+	public record RemovedBlock(UUID waypointId, String name, ResourceKey<Level> dimension, BlockPos pos, int blockIndex,
+			long atMillis) implements UndoEntry {
+	}
+
+	/** An undo that was applied: the entry and the waypoint it restored (whole, or with the block back). */
+	public record Undone(UndoEntry entry, Waypoint waypoint) {
+	}
+
+	private void pushUndo(UndoEntry entry) {
+		expireDeletions(false);
+		recentlyUndoable.addFirst(entry);
+		while (recentlyUndoable.size() > MAX_PENDING_UNDO) recentlyUndoable.removeLast();
+	}
+
+	/** The most recent undoable action (whole deletion or block removal) that has not expired yet. */
+	public synchronized Optional<UndoEntry> lastUndo() {
+		expireDeletions(false);
+		return Optional.ofNullable(recentlyUndoable.peekFirst());
+	}
+
+	/** The most recent whole-waypoint deletion that has not expired yet. */
 	public synchronized Optional<DeletedWaypoint> lastDeleted() {
 		expireDeletions(false);
-		return Optional.ofNullable(recentlyDeleted.peekFirst());
-	}
-
-	/** Milliseconds left to restore {@code deleted} (0 when expired). */
-	public synchronized long remainingUndoMillis(DeletedWaypoint deleted) {
-		return Math.max(0L, deleted.deletedAtMillis() + UNDO_WINDOW_MILLIS - clock.getAsLong());
-	}
-
-	/** True if the deletion is pending and none of its blocks has since been claimed by another waypoint. */
-	public synchronized boolean canRestore(DeletedWaypoint deleted) {
-		expireDeletions(false);
-		if (!recentlyDeleted.contains(deleted)) return false;
-		Map<BlockPos, Waypoint> index = blockIndex.get(deleted.waypoint().dimension);
-		if (index == null) return true;
-		for (BlockPos pos : deleted.waypoint().blocks()) {
-			if (index.containsKey(pos)) return false;
+		for (UndoEntry entry : recentlyUndoable) {
+			if (entry instanceof DeletedWaypoint deleted) return Optional.of(deleted);
 		}
-		return true;
+		return Optional.empty();
+	}
+
+	/** Milliseconds left to undo {@code entry} (0 when expired). */
+	public synchronized long remainingUndoMillis(UndoEntry entry) {
+		return Math.max(0L, entry.atMillis() + UNDO_WINDOW_MILLIS - clock.getAsLong());
+	}
+
+	/**
+	 * True if the entry is pending and can be applied now: for a deleted waypoint, none of its blocks has since been
+	 * claimed by another waypoint; for a removed block, its waypoint still exists (in the same dimension), is not full
+	 * and the block is still free.
+	 */
+	public synchronized boolean canUndo(UndoEntry entry) {
+		expireDeletions(false);
+		if (!recentlyUndoable.contains(entry)) return false;
+		Map<BlockPos, Waypoint> index = blockIndex.get(entry.dimension());
+		return switch (entry) {
+			case DeletedWaypoint deleted -> {
+				if (index != null) {
+					for (BlockPos pos : deleted.waypoint().blocks()) {
+						if (index.containsKey(pos)) yield false;
+					}
+				}
+				yield true;
+			}
+			case RemovedBlock removed -> {
+				Waypoint w = byId(removed.waypointId()).orElse(null);
+				yield w != null && w.dimension.equals(removed.dimension()) && w.size() < Waypoint.MAX_BLOCKS
+						&& !w.contains(removed.pos()) && (index == null || !index.containsKey(removed.pos()));
+			}
+		};
+	}
+
+	/** Applies a pending undo entry if {@link #canUndo} allows it (the menu's Undo). The restored waypoint, or null. */
+	public synchronized @Nullable Waypoint undo(UndoEntry entry) {
+		return canUndo(entry) ? apply(entry) : null;
 	}
 
 	/**
@@ -220,49 +322,71 @@ public final class WaypointManager {
 	 */
 	public synchronized @Nullable Waypoint restore(UUID id) {
 		expireDeletions(false);
-		for (DeletedWaypoint deleted : recentlyDeleted) {
-			if (deleted.waypoint().id.equals(id)) return canRestore(deleted) ? restore(deleted) : null;
+		for (UndoEntry entry : recentlyUndoable) {
+			if (entry instanceof DeletedWaypoint deleted && deleted.waypoint().id.equals(id)) return undo(deleted);
 		}
 		return null;
 	}
 
 	/**
-	 * The N key's undo: restores the newest pending deletion in {@code dimension} that had a block at {@code pos} and
-	 * whose blocks are all still free. Null if there is none (then the press is handled normally).
+	 * The N key's undo: applies the newest pending entry in {@code dimension} for the block at {@code pos} (a deleted
+	 * waypoint that had this block, or this removed block) that {@link #canUndo} allows. Null if there is none (then
+	 * the press is handled normally).
 	 */
-	public synchronized @Nullable Waypoint restoreDeletedAt(BlockPos pos, ResourceKey<Level> dimension) {
+	public synchronized @Nullable Undone undoAt(BlockPos pos, ResourceKey<Level> dimension) {
 		expireDeletions(false);
-		for (DeletedWaypoint deleted : recentlyDeleted) {
-			Waypoint w = deleted.waypoint();
-			if (w.dimension.equals(dimension) && w.contains(pos) && canRestore(deleted)) return restore(deleted);
+		for (UndoEntry entry : List.copyOf(recentlyUndoable)) {
+			if (!entry.dimension().equals(dimension)) continue;
+			boolean matches = switch (entry) {
+				case DeletedWaypoint deleted -> deleted.waypoint().contains(pos);
+				case RemovedBlock removed -> removed.pos().equals(pos);
+			};
+			if (matches && canUndo(entry)) return new Undone(entry, apply(entry));
 		}
 		return null;
 	}
 
-	private Waypoint restore(DeletedWaypoint deleted) {
-		recentlyDeleted.remove(deleted);
-		Waypoint w = deleted.waypoint();
-		waypoints.add(Math.min(deleted.listIndex(), waypoints.size()), w);
-		index(w);
-		if (deleted.wasSelected() && selectedId == null) selectedId = w.id;
-		markDirty();
-		return w;
+	/** Applies an entry {@link #canUndo} allowed and drops it from the stack. */
+	private Waypoint apply(UndoEntry entry) {
+		recentlyUndoable.remove(entry);
+		switch (entry) {
+			case DeletedWaypoint deleted -> {
+				Waypoint w = deleted.waypoint();
+				waypoints.add(Math.min(deleted.listIndex(), waypoints.size()), w);
+				index(w);
+				if (deleted.wasSelected() && selectedId == null) selectedId = w.id;
+				markDirty();
+				return w;
+			}
+			case RemovedBlock removed -> {
+				Waypoint w = byId(removed.waypointId()).orElseThrow();
+				w.insertBlockInternal(removed.blockIndex(), removed.pos());
+				blockIndex.computeIfAbsent(w.dimension, d -> new HashMap<>()).put(removed.pos(), w);
+				// Back to 2+ blocks: a clump is never a beacon.
+				if (w.isClump() && w.style == WaypointStyle.BEACON) w.style = WaypointStyle.BLOCK_HIGHLIGHT;
+				markDirty();
+				return w;
+			}
+		}
+	}
+
+	/** Drops the pending block removals of {@code waypointId} (all of them, or only the one at {@code pos}). */
+	private void dropRemovedBlocks(UUID waypointId, @Nullable BlockPos pos) {
+		recentlyUndoable.removeIf(e -> e instanceof RemovedBlock r && r.waypointId().equals(waypointId)
+				&& (pos == null || r.pos().equals(pos)));
 	}
 
 	/**
-	 * Makes deletions permanent: the expired ones, or with {@code all} every pending one (world change, disconnect;
-	 * the devtest uses it to force expiry).
+	 * Makes undoable actions permanent: the expired ones, or with {@code all} every pending one (world change,
+	 * disconnect; the devtest uses it to force expiry).
 	 */
 	public synchronized void expireDeletions(boolean all) {
 		if (all) {
-			recentlyDeleted.clear();
+			recentlyUndoable.clear();
 			return;
 		}
 		long now = clock.getAsLong();
-		Iterator<DeletedWaypoint> it = recentlyDeleted.iterator();
-		while (it.hasNext()) {
-			if (now - it.next().deletedAtMillis() >= UNDO_WINDOW_MILLIS) it.remove();
-		}
+		recentlyUndoable.removeIf(e -> now - e.atMillis() >= UNDO_WINDOW_MILLIS);
 	}
 
 	// ---------------------------------------------------------------- move
@@ -296,6 +420,7 @@ public final class WaypointManager {
 		if (blocker != null) return new MoveResult(MoveResult.Status.OVERLAP, blocker);
 		waypoint.translateInternal(dx, dy, dz);
 		reindex(waypoint.dimension);
+		dropRemovedBlocks(waypoint.id, null); // their positions no longer fit the moved waypoint
 		markDirty();
 		return new MoveResult(MoveResult.Status.MOVED, null);
 	}
@@ -337,6 +462,7 @@ public final class WaypointManager {
 		if (waypoint.size() >= Waypoint.MAX_BLOCKS) return AddBlockResult.LIMIT_REACHED;
 		if (!waypoint.addBlockInternal(pos)) return AddBlockResult.LIMIT_REACHED;
 		index.put(pos.immutable(), waypoint);
+		dropRemovedBlocks(waypoint.id, pos); // the block is back: its pending removal is moot
 		// A clump is never a beacon: it becomes Block Selection the moment it grows to two blocks.
 		if (waypoint.style == WaypointStyle.BEACON) waypoint.style = WaypointStyle.BLOCK_HIGHLIGHT;
 		markDirty();
@@ -398,7 +524,7 @@ public final class WaypointManager {
 	}
 
 	private void clear() {
-		recentlyDeleted.clear(); // pending deletions become permanent
+		recentlyUndoable.clear(); // pending deletions and block removals become permanent
 		waypoints.clear();
 		blockIndex.clear();
 		selectedId = null;

@@ -117,8 +117,8 @@ public class WaypointScreen extends Screen {
 	private @Nullable Button newHereButton;
 	private @Nullable Button deleteButton;
 	private @Nullable Button undoButton;
-	/** The deletion the Undo button currently offers (null: the button is hidden). */
-	private WaypointManager.@Nullable DeletedWaypoint undoOffer;
+	/** The undoable action (deletion or block removal) the Undo button currently offers (null: the button is hidden). */
+	private WaypointManager.@Nullable UndoEntry undoOffer;
 	private boolean undoRestorable;
 	private @Nullable ScrollableLayout editorScroll;
 	private LinearLayout editorContent = LinearLayout.vertical();
@@ -186,7 +186,7 @@ public class WaypointScreen extends Screen {
 
 	/**
 	 * Lays out the row under the list: {@code + New here | Delete}, or {@code + New here | Delete | Undo} while a
-	 * deletion can be undone.
+	 * deletion or block removal can be undone.
 	 */
 	private void layoutListButtons() {
 		if (list == null || newHereButton == null || deleteButton == null || undoButton == null) return;
@@ -202,19 +202,21 @@ public class WaypointScreen extends Screen {
 	}
 
 	/**
-	 * Shows the Undo button while the manager has a pending deletion (15 s), active only if it can be restored
-	 * (its blocks are still free). Called on init and every tick.
+	 * Shows the Undo button while the manager has a pending undoable action (15 s): the most recent whole deletion or
+	 * block removal, active only if it can be applied now. Called on init and every tick.
 	 */
 	private void updateUndoButton(boolean force) {
 		if (undoButton == null) return;
-		WaypointManager.DeletedWaypoint offer = manager.lastDeleted().orElse(null);
-		boolean restorable = offer != null && manager.canRestore(offer);
+		WaypointManager.UndoEntry offer = manager.lastUndo().orElse(null);
+		boolean restorable = offer != null && manager.canUndo(offer);
 		if (!force && offer == undoOffer && restorable == undoRestorable) return;
 		undoOffer = offer;
 		undoRestorable = restorable;
 		undoButton.active = restorable;
-		undoButton.setTooltip(offer == null ? null : Tooltip.create(Component.translatable(
-				restorable ? "waypy.gui.undo.tooltip" : "waypy.gui.undo.blocked", offer.waypoint().name)));
+		String key = offer instanceof WaypointManager.RemovedBlock
+				? (restorable ? "waypy.gui.undo.block_tooltip" : "waypy.gui.undo.block_blocked")
+				: (restorable ? "waypy.gui.undo.tooltip" : "waypy.gui.undo.blocked");
+		undoButton.setTooltip(offer == null ? null : Tooltip.create(Component.translatable(key, offer.name())));
 		layoutListButtons();
 	}
 
@@ -599,11 +601,14 @@ public class WaypointScreen extends Screen {
 		rebuildWidgets();
 	}
 
-	/** Restores the most recent deletion (if its blocks are still free) and selects it. */
+	/**
+	 * Undoes the most recent undoable action (a deleted waypoint or a block removed from one), if it can be applied,
+	 * and selects the restored waypoint. The editor is rebuilt, so the Style lock follows the new block count.
+	 */
 	public void undoDelete() {
-		Optional<WaypointManager.DeletedWaypoint> offer = manager.lastDeleted();
+		Optional<WaypointManager.UndoEntry> offer = manager.lastUndo();
 		if (offer.isEmpty()) return;
-		Waypoint restored = manager.restore(offer.get().waypoint().id);
+		Waypoint restored = manager.undo(offer.get());
 		if (restored == null) {
 			updateUndoButton(true);
 			return;

@@ -21,9 +21,10 @@ import net.minecraft.world.phys.Vec3;
  * so the change is persisted. Use {@link #setName(String)} (or {@link #MAX_NAME_LENGTH}) to respect the length limit.
  *
  * <p>The blocks are encapsulated: ordered (first added first), unique and never empty. The first block is the
- * {@link #anchor()}. Blocks are added only through {@link WaypointManager#addBlock}, which keeps the manager's
- * block index in sync, and moved only through {@link WaypointManager#move}. Every change bumps {@link #version()}, so
- * renderers can cache geometry built from the blocks.
+ * {@link #anchor()}. Blocks are added only through {@link WaypointManager#addBlock} (or an undo), removed only
+ * through {@link WaypointManager#removeBlock}, which keep the manager's block index in sync, and moved only through
+ * {@link WaypointManager#move}. Every change bumps {@link #version()}, so renderers can cache geometry built from the
+ * blocks.
  */
 public final class Waypoint {
 	public static final int MAX_NAME_LENGTH = 32;
@@ -134,6 +135,34 @@ public final class Waypoint {
 		blocks.add(immutable);
 		version++;
 		return true;
+	}
+
+	/**
+	 * Inserts a block at {@code index} (clamped to the list size; 0 makes it the anchor). False if it is already in
+	 * this waypoint or the cap is reached. Only the manager calls this (undo of a block removal).
+	 */
+	boolean insertBlockInternal(int index, BlockPos pos) {
+		if (blocks.size() >= MAX_BLOCKS) return false;
+		BlockPos immutable = pos.immutable();
+		if (!blockSet.add(immutable)) return false;
+		blocks.add(Math.clamp(index, 0, blocks.size()), immutable);
+		version++;
+		return true;
+	}
+
+	/**
+	 * Removes a block, keeping the order of the others (removing the anchor makes the next block the anchor).
+	 * Only the manager calls this ({@link WaypointManager#removeBlock}).
+	 *
+	 * @return the block's former index, or -1 if it is not in this waypoint or it is the only block
+	 */
+	int removeBlockInternal(BlockPos pos) {
+		if (blocks.size() <= 1 || !blockSet.contains(pos)) return -1;
+		int index = blocks.indexOf(pos);
+		blocks.remove(index);
+		blockSet.remove(pos);
+		version++;
+		return index;
 	}
 
 	/**
