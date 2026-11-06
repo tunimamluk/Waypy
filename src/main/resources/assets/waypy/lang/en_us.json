@@ -5,5 +5,6 @@
 	"waypy.screen.title": "Waypy",
 	"waypy.message.created": "Waypoint \"%s\" created",
 	"waypy.message.no_block": "No block in sight",
-	"waypy.message.no_block_below": "No block below you"
+	"waypy.message.no_block_below": "No block below you",
+	"waypy.render.label": "%s (%sm)"
 }
