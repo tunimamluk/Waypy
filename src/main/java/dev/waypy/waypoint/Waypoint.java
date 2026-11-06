@@ -16,7 +16,7 @@ import net.minecraft.world.level.Level;
  */
 public final class Waypoint {
 	public static final int MAX_NAME_LENGTH = 32;
-	public static final int MAX_LOGO_TEXT_LENGTH = 3;
+	public static final int MAX_LOGO_TEXT_LENGTH = 8;
 
 	public UUID id;
 	/** Display name, max {@value #MAX_NAME_LENGTH} chars. */

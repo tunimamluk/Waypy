@@ -67,9 +67,20 @@ public final class WaypyClient implements ClientModInitializer {
 
 	/** N: waypoint at the block under the player; Shift+N: at the block the camera looks at. */
 	private static void createWaypoint(Minecraft client) {
-		if (client.player == null || client.level == null) return;
-		BlockPos pos = client.hasShiftDown() ? findLookedAtBlock(client) : findBlockBelow(client);
-		if (pos == null) return;
+		createWaypoint(client, client.hasShiftDown());
+	}
+
+	/**
+	 * Creates a waypoint at the block the player stands on ({@code lookedAt == false}) or at the block the
+	 * camera looks at, selects it and shows the action-bar message. Shared by the N key and the menu's
+	 * "+ New here" button.
+	 *
+	 * @return the new waypoint, or null if there is no player/level or no block was found
+	 */
+	public static @Nullable Waypoint createWaypoint(Minecraft client, boolean lookedAt) {
+		if (client.player == null || client.level == null) return null;
+		BlockPos pos = lookedAt ? findLookedAtBlock(client) : findBlockBelow(client);
+		if (pos == null) return null;
 
 		Item item = client.level.getBlockState(pos).getBlock().asItem();
 		Identifier logo = item == Items.AIR ? WaypointManager.DEFAULT_LOGO : BuiltInRegistries.ITEM.getKey(item);
@@ -78,10 +89,11 @@ public final class WaypyClient implements ClientModInitializer {
 		Waypoint waypoint = manager.create(pos, client.level.dimension(), logo);
 		manager.select(waypoint.id);
 		client.player.sendOverlayMessage(Component.translatable("waypy.message.created", waypoint.name));
+		return waypoint;
 	}
 
 	/** Block the player stands on, or the first non-air block straight below (down to min build height). */
-	private static @Nullable BlockPos findBlockBelow(Minecraft client) {
+	public static @Nullable BlockPos findBlockBelow(Minecraft client) {
 		BlockPos.MutableBlockPos cursor = client.player.getOnPos().mutable();
 		int minY = client.level.getMinY();
 		while (cursor.getY() >= minY) {
@@ -93,7 +105,7 @@ public final class WaypyClient implements ClientModInitializer {
 	}
 
 	/** Raycast from the camera up to {@link #MAX_RAYCAST_DISTANCE} blocks, ignoring fluids. */
-	private static @Nullable BlockPos findLookedAtBlock(Minecraft client) {
+	public static @Nullable BlockPos findLookedAtBlock(Minecraft client) {
 		Entity camera = client.getCameraEntity() != null ? client.getCameraEntity() : client.player;
 		HitResult hit = camera.pick(MAX_RAYCAST_DISTANCE, 1.0f, false);
 		if (!(hit instanceof BlockHitResult blockHit) || hit.getType() != HitResult.Type.BLOCK) {
