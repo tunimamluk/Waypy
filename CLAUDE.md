@@ -2,6 +2,10 @@
 
 Client-side Fabric waypoint mod for Minecraft 26.2 (Java 25). See `docs/DESIGN.md` for the spec.
 
+## Ideas file
+
+`IDEAS.md` at the repo root is the user's backlog of feature ideas. When the user asks to add an idea, append it there (a numbered entry with a short title and their description) and commit it. Ideas are not built until the user asks for one; when one is built, mark it **(done)** in `IDEAS.md` and move the details into `docs/DESIGN.md`.
+
 ## Working model: architect + subagents
 
 The main Claude session acts as **architect and orchestrator**: it plans, breaks work down, writes briefs, reviews results for consistency, and handles git. All real work (coding or design) is delegated to subagents.
