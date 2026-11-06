@@ -11,8 +11,8 @@ All three keys are vanilla `KeyMapping`s in the "Waypy" category, so they are li
 
 | Key mapping | Name in Key Binds | Default |
 |---|---|---|
-| `key.waypy.create` | Create / Delete Waypoint (hold for clump) | `N` |
-| `key.waypy.look_modifier` | Look-at Modifier (hold with Create) | `Left Shift` |
+| `key.waypy.create` | Create/Delete Waypoint | `N` |
+| `key.waypy.look_modifier` | Look-at Modifier | `Left Shift` |
 | `key.waypy.menu` | Open Waypoint Menu | `M` |
 
 | Key | Action |

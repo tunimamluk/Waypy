@@ -12,7 +12,7 @@ Waypy is a client-side waypoint mod for Fabric on Minecraft 26.2. Mark places in
 
 Put the jar in your `.minecraft/mods` folder.
 
-- A prebuilt jar is committed at [`dist/waypy-0.2.0.jar`](dist/waypy-0.2.0.jar).
+- A prebuilt jar is committed at [`dist/waypy-0.3.0.jar`](dist/waypy-0.3.0.jar).
 - CI also builds the jar on every push. Open the Actions tab, pick a run and download the `waypy-jar` artifact.
 
 ## Controls
@@ -29,7 +29,7 @@ A clump is one waypoint made of several blocks. It is always drawn as Block Sele
 
 Creating a waypoint is silent. Deleting one shows `Waypoint "<name>" removed – press N to undo` for 15 seconds. The waypoint can't come back if another waypoint has taken one of its blocks in the meantime, and leaving the world makes deletions final.
 
-All three keys can be rebound under Options → Controls → Key Binds → Waypy: "Create / Delete Waypoint (hold for clump)" (`N`), "Look-at Modifier (hold with Create)" (`Left Shift`; sharing it with Sneak works) and "Open Waypoint Menu" (`M`).
+All three keys can be rebound under Options → Controls → Key Binds → Waypy: "Create/Delete Waypoint" (`N`), "Look-at Modifier" (`Left Shift`; sharing it with Sneak works) and "Open Waypoint Menu" (`M`).
 
 ## Menu
 

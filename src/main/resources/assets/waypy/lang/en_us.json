@@ -1,8 +1,8 @@
 {
   "key.category.waypy.waypy": "Waypy",
-  "key.waypy.create": "Create / Delete Waypoint (hold for clump)",
+  "key.waypy.create": "Create/Delete Waypoint",
   "key.waypy.menu": "Open Waypoint Menu",
-  "key.waypy.look_modifier": "Look-at Modifier (hold with Create)",
+  "key.waypy.look_modifier": "Look-at Modifier",
   "waypy.screen.title": "Waypy",
   "waypy.message.removed": "Waypoint \"%s\" removed – press %s to undo",
   "waypy.message.restored": "Waypoint \"%s\" restored",
