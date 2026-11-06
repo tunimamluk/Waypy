@@ -50,7 +50,7 @@ import dev.waypy.waypoint.WaypointStyle;
  *   <li>"Diamond Beacon": BEACON, BLOCK logo, red, text, on a diamond block on top of a hill, ~37 blocks away on the right.</li>
  *   <li>"Lapis Beacon": BEACON, BLOCK logo (lapis), light blue, text, on a lapis block ~64 blocks away on the left.</li>
  *   <li>"Hidden Cache": BLOCK_HIGHLIGHT, throughBlocks=true, lime, text, behind a stone-brick wall ~24 blocks ahead.</li>
- *   <li>"Gold Block": BLOCK_HIGHLIGHT, throughBlocks=false, logo NONE (label only), orange, text, on a gold block ~13 blocks ahead on the left.</li>
+ *   <li>"Gold Block": BLOCK_HIGHLIGHT, throughBlocks=false, logo NONE (pin shows the initial "G"), yellow (light colour: dark initial), text, on a gold block ~13 blocks ahead on the left.</li>
  *   <li>"Far Beacon": BEACON, BLOCK logo, purple, text OFF (logo only), ~200 blocks ahead, far outside the render
  *       distance (its chunk is not loaded), to check that far beams are drawn without fog.</li>
  * </ul>
@@ -192,6 +192,7 @@ final class Scenario {
 		step("open KeyBindsScreen", this::noPendingScreenshots, this::openKeyBinds, 30);
 		screenshot("32_key_binds");
 		step("close key binds", this::noPendingScreenshots, () -> mc.gui.setScreen(null), 10);
+		step("config: an old minIconSize field is ignored", () -> true, Scenario::checkOldConfigField, 2);
 		step("restore default settings (end)", () -> true, () -> setConfig(c -> {
 		}), 5);
 
@@ -279,7 +280,7 @@ final class Scenario {
 
 		highlightSolid = wm.create(new BlockPos(6, FEET_Y, 12), dim, Identifier.withDefaultNamespace("gold_block"));
 		highlightSolid.setName("Gold Block");
-		highlightSolid.color = 0xF9801D;
+		highlightSolid.color = 0xFED83D; // yellow: a light badge, so the dark initial is covered
 		highlightSolid.style = WaypointStyle.BLOCK_HIGHLIGHT;
 		highlightSolid.logoType = LogoType.NONE;
 		highlightSolid.throughBlocks = false;
@@ -578,7 +579,8 @@ final class Scenario {
 
 	/**
 	 * Walking away from "Walk Test" (alone on screen, text on): two shots three blocks apart, then a sequence at
-	 * doubling distances. The marker shrinks continuously; compare the crops for jumps or jitter.
+	 * doubling distances (16, 32, 64, 128, 256): the pin shrinks with perspective (half at 32) down to its fixed
+	 * floor; compare the crops for jumps or jitter.
 	 */
 	private void walkingAwayShots() {
 		List<Waypoint> hidden = new ArrayList<>();
@@ -595,9 +597,10 @@ final class Scenario {
 				{"44_walk_seq_d64", "64"}, {"45_walk_seq_d128", "128"}, {"46_walk_seq_d256", "256"}};
 		for (String[] shot : shots) {
 			double d = Double.parseDouble(shot[1]);
-			// Facing +X (yaw -90), level; Walk Test's block centre is at x 60.5, z 0.5.
+			// Facing +X (yaw -90), looking 10 degrees down so the pin (just above eye level) sits clear of the
+			// crosshair; Walk Test's block centre is at x 60.5, z 0.5.
 			step("walk back to " + shot[1] + " blocks", this::noPendingScreenshots,
-					() -> command("tp @a " + (60.5 - d) + " " + FEET_Y + " 0.5 -90 0"), 30);
+					() -> command("tp @a " + (60.5 - d) + " " + FEET_Y + " 0.5 -90 10"), 30);
 			screenshot(shot[0]);
 		}
 		step("walk test: restore visibility", this::noPendingScreenshots, () -> {
@@ -721,6 +724,20 @@ final class Scenario {
 		if (!condition) throw new IllegalStateException("check failed: " + message);
 	}
 
+	/** A config file from an older version (with the removed "Minimum Size" field) still loads; the field is ignored. */
+	private static void checkOldConfigField() {
+		try {
+			java.nio.file.Files.writeString(WaypyConfig.path(),
+					"{\n  \"iconSize\": 150,\n  \"shrinkWithDistance\": false,\n  \"minIconSize\": 25\n}\n");
+		} catch (java.io.IOException e) {
+			throw new IllegalStateException(e);
+		}
+		WaypyConfig.load();
+		check(WaypyConfig.get().iconSize == 150 && !WaypyConfig.get().shrinkWithDistance,
+				"config with an old minIconSize field did not load: iconSize=" + WaypyConfig.get().iconSize);
+		DevtestClient.log("config: old minIconSize field ignored, other fields loaded");
+	}
+
 	/** Resets the live config to the defaults, applies {@code change} and saves it to config/waypy.json. */
 	private static void setConfig(Consumer<WaypyConfig> change) {
 		WaypyConfig wanted = new WaypyConfig();
@@ -728,7 +745,7 @@ final class Scenario {
 		WaypyConfig.get().copyFrom(wanted);
 		WaypyConfig.save();
 		DevtestClient.log("settings: renderDistance=" + WaypyConfig.get().waypointRenderDistance + " iconSize=" + WaypyConfig.get().iconSize
-				+ " shrink=" + WaypyConfig.get().shrinkWithDistance + " min=" + WaypyConfig.get().minIconSize
+				+ " shrink=" + WaypyConfig.get().shrinkWithDistance
 				+ " labels=" + WaypyConfig.get().labels + " showDistance=" + WaypyConfig.get().showDistance);
 	}
 

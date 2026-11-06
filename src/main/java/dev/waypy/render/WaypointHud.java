@@ -12,7 +12,6 @@ import java.util.UUID;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.math.Axis;
-import org.jspecify.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.joml.Vector4f;
 
@@ -43,55 +42,76 @@ import dev.waypy.waypoint.Waypoint;
 import dev.waypy.waypoint.WaypointManager;
 
 /**
- * Draws the logo + "name (distance)" label of every visible waypoint as a 2D HUD overlay:
- * the anchor point above the waypoint is projected to the screen with the same
- * projection * bobbing * view-rotation matrix the level is rendered with, then the logo and
- * label are drawn there. Being HUD, it is always on top of the
- * world (visible through blocks) and never clipped by the far plane.
+ * Draws every visible waypoint as a "coloured pin" (design variant D) on a 2D HUD overlay: the anchor point above
+ * the waypoint is projected to the screen with the same projection * bobbing * view-rotation matrix the level is
+ * rendered with, and the pin is drawn so the tip of its stepped pointer sits exactly on that point. Being HUD, it is
+ * always on top of the world (visible through blocks) and never clipped by the far plane.
  *
- * <p>Size: each marker (logo and label) is scaled by {@link #distanceScale} times the "Icon size" setting, through
- * the GUI pose matrix, continuously (no quantisation, so markers shrink smoothly). The label is never drawn below
- * {@link #MIN_LABEL_SCALE}, so it stays legible. Only the marker's anchor is snapped to a framebuffer pixel.
+ * <p>Pin geometry, in GUI pixels at 100 % relative to the anchor (tip) at (0, 0): a 20x20 badge at x -10..10,
+ * y -23..-3, filled with the waypoint colour, with a 1 px ring in the shade colour and its four corner pixels cut
+ * away; the 16x16 item icon at (-8, -21) (logo NONE: the name's initial, centred, or a 2x2 dot for an empty name);
+ * below it a stepped pointer in the shade colour, rows 6, 4 and 2 px wide, the last ending at y 0. The name tag
+ * (a 40 % dark plate, 1 px padding left/right/top, white text) sits 2 px above the badge.
  *
- * <p>Logos always draw. A label is drawn only for waypoints with {@code showText} on; the others take no part in
- * label decisions. Labels ("Labels: Always") are decluttered with the scaled rectangles: a label that
- * would overlap another label, or the logo of a nearer waypoint, is hidden if its waypoint is the farther one.
- * The label of the marker nearest the crosshair (within {@link #FOCUS_RADIUS} GUI px) always shows and is drawn
- * on top; with "Labels: Looking At" it is the only label. Labels shown or hidden by these rules fade in and out
- * over {@link #LABEL_FADE_MILLIS} instead of popping.
+ * <p>Size: the pin is scaled by {@link #distanceScale} times the "Icon size" setting, through the GUI pose matrix,
+ * continuously (no quantisation, so pins shrink smoothly). The tag is never drawn below {@link #MIN_LABEL_SCALE}, so
+ * it stays legible. Only the anchor is snapped to a framebuffer pixel; all offsets from it are whole unscaled
+ * pixels, so the pin is pixel-crisp at 100 %.
+ *
+ * <p>Pins always draw. A tag is drawn only for waypoints with {@code showText} on; the others take no part in
+ * tag decisions. Tags ("Labels: Always") are decluttered with the scaled rectangles: a tag that would overlap
+ * another tag, or the pin of a nearer waypoint, is hidden if its waypoint is the farther one. The tag of the pin
+ * nearest the crosshair (within {@link #FOCUS_RADIUS} GUI px of its badge centre) always shows and is drawn on top;
+ * with "Labels: Looking At" it is the only tag. Tags shown or hidden by these rules fade in and out over
+ * {@link #LABEL_FADE_MILLIS} instead of popping.
  */
 final class WaypointHud implements HudElement {
-	/** Logo anchor height above the top face of a BLOCK_HIGHLIGHT waypoint, in blocks. */
+	/** Pin tip height above the top face of a BLOCK_HIGHLIGHT waypoint, in blocks. */
 	static final double HIGHLIGHT_LOGO_HEIGHT = 1.5;
-	/** Logo anchor height above the top face of a BEACON waypoint, in blocks. */
+	/** Pin tip height above the top face of a BEACON waypoint, in blocks. */
 	static final double BEACON_LOGO_HEIGHT = 3.0;
-	/** Half the logo height in GUI pixels (item icons are 16x16). A NONE logo keeps this space so labels don't move. */
-	private static final int LOGO_HALF_HEIGHT = 8;
-	/** Gap between logo and label, in GUI pixels. */
-	private static final int LABEL_GAP = 3;
-	/** Default label background opacity (vanilla nametags use 0.25; slightly darker reads better on the HUD). */
+
+	/** Badge size (square), in unscaled GUI pixels. */
+	static final int BADGE_SIZE = 20;
+	/** Height of the stepped pointer (rows 6, 4, 2 px wide) under the badge. */
+	static final int POINTER_HEIGHT = 3;
+	/** Badge top relative to the tip. */
+	private static final int BADGE_TOP = -(BADGE_SIZE + POINTER_HEIGHT);
+	private static final int BADGE_LEFT = -BADGE_SIZE / 2;
+	/** Gap between the tag plate and the badge. */
+	private static final int TAG_GAP = 2;
+	/** Shade (ring and pointer) = colour times this, as in the design. */
+	private static final float SHADE_FACTOR = 0.55f;
+	/** Dark initial on a light badge = colour times this. */
+	private static final float DARK_TEXT_FACTOR = 0.3f;
+	/** Badges with a relative luminance above this get dark text instead of white text with a shadow. */
+	static final double LIGHT_LUMINANCE = 0.42;
+	/** Badges with a relative luminance below this get a lighter (not darker) shade, so the ring stays visible. */
+	static final double VERY_DARK_LUMINANCE = 0.03;
+	/** Vanilla's drop shadow colour for white text (white times 0.25). */
+	private static final int TEXT_SHADOW = 0xFF3F3F3F;
+
+	/** Default tag background opacity, as in the design (vanilla nametags use 0.25). */
 	private static final float LABEL_BACKGROUND_OPACITY = 0.4f;
 	/** Points closer than this (view-space w) to the camera plane are treated as behind the camera. */
 	private static final float MIN_CLIP_W = 0.05f;
-	/** The marker nearest the screen centre within this many GUI pixels always shows its label. */
+	/** The pin nearest the screen centre within this many GUI pixels always shows its tag. */
 	private static final float FOCUS_RADIUS = 40.0f;
-	/** Extra spacing kept between label rectangles, in GUI pixels. */
+	/** Extra spacing kept between tag rectangles, in GUI pixels. */
 	private static final int LABEL_MARGIN = 1;
 
-	/** Markers at or nearer than this many blocks are drawn at full size. */
-	static final double SHRINK_NEAR = 16.0;
-	/** Markers at or beyond this many blocks are drawn at the minimum size. */
-	static final double SHRINK_FAR = 256.0;
-	private static final double LOG_SHRINK_NEAR = Math.log(SHRINK_NEAR);
-	private static final double LOG_SHRINK_FAR = Math.log(SHRINK_FAR);
-	/** Labels never draw smaller than this (effective scale), however small the logo gets. */
+	/** Perspective reference: pins at or nearer than this many blocks are drawn at full size; at twice it, half. */
+	static final double REF_DISTANCE = 16.0;
+	/** Fixed floor of the distance scale, so far pins (16 px icon) stay recognisable and never vanish. */
+	static final float MIN_SCALE = 0.35f;
+	/** Tags never draw smaller than this (effective scale), however small the pin gets. */
 	static final float MIN_LABEL_SCALE = 0.5f;
-	/** Time a label takes to fade fully in or out, in milliseconds. */
+	/** Time a tag takes to fade fully in or out, in milliseconds. */
 	static final float LABEL_FADE_MILLIS = 175.0f;
 	/** Longest frame time a fade advances by (so a hitch doesn't skip a fade). */
 	private static final float MAX_FRAME_MILLIS = 100.0f;
 
-	/** Label opacity (0..1] per waypoint id, for markers on screen in the last frame. */
+	/** Tag opacity (0..1] per waypoint id, for markers on screen in the last frame. */
 	private final Map<UUID, Float> labelAlpha = new HashMap<>();
 	private long lastFrameNanos;
 
@@ -100,21 +120,50 @@ final class WaypointHud implements HudElement {
 	private final Vector4f clip = new Vector4f();
 
 	/**
-	 * A projected waypoint. {@code x}/{@code y} is the logo centre (snapped to a framebuffer pixel);
-	 * {@code logoScale} and {@code labelScale} are the (continuous) pose scales of the logo and of the label.
+	 * A projected waypoint. {@code x}/{@code y} is the pin tip (the anchor, snapped to a framebuffer pixel);
+	 * {@code logoScale} and {@code labelScale} are the (continuous) pose scales of the pin and of the tag.
 	 */
 	private record Marker(Waypoint waypoint, float x, float y, double distance, float logoScale, float labelScale) {
+		/** Y of the badge centre, used for the crosshair focus. */
+		float badgeCentreY() {
+			return y + (BADGE_TOP + BADGE_SIZE / 2.0f) * logoScale;
+		}
+	}
+
+	/** Badge fill, shade (ring and pointer) and text (initial) colours for a waypoint colour, all opaque. */
+	record PinColors(int fill, int shade, int text, boolean textShadow) {
+		static PinColors of(int rgb) {
+			int fill = ARGB.opaque(rgb);
+			double luminance = luminance(fill);
+			int shade = luminance < VERY_DARK_LUMINANCE
+					? ARGB.srgbLerp(0.35f, fill, 0xFFFFFFFF)
+					: scale(fill, SHADE_FACTOR);
+			boolean light = luminance > LIGHT_LUMINANCE;
+			int text = light ? scale(fill, DARK_TEXT_FACTOR) : 0xFFFFFFFF;
+			return new PinColors(fill, ARGB.opaque(shade), ARGB.opaque(text), !light);
+		}
+
+		/** Each channel times {@code f}, rounded (as the design's shade()). */
+		private static int scale(int rgb, float f) {
+			return ARGB.color(255, Math.round(ARGB.red(rgb) * f), Math.round(ARGB.green(rgb) * f), Math.round(ARGB.blue(rgb) * f));
+		}
+
+		/** WCAG relative luminance (0 black .. 1 white) of an sRGB colour. */
+		static double luminance(int rgb) {
+			return 0.2126 * ARGB.srgbToLinearChannel(ARGB.red(rgb))
+					+ 0.7152 * ARGB.srgbToLinearChannel(ARGB.green(rgb))
+					+ 0.0722 * ARGB.srgbToLinearChannel(ARGB.blue(rgb));
+		}
 	}
 
 	/**
-	 * Marker size factor (before the global icon size): 1 at or under {@link #SHRINK_NEAR} blocks, {@code min} at or
-	 * beyond {@link #SHRINK_FAR}, linear in log(distance) in between. Always 1 when shrinking is off.
+	 * Marker size factor (before the global icon size), true perspective: {@code REF_DISTANCE / distance}, clamped to
+	 * [{@link #MIN_SCALE}, 1] (1 up to 16 blocks, 0.5 at 32, 0.25 would be 64 but the floor holds it at 0.35 from
+	 * about 46 blocks). Always 1 when shrinking is off.
 	 */
-	static float distanceScale(double distance, boolean shrink, float min) {
-		if (!shrink || distance <= SHRINK_NEAR) return 1.0f;
-		if (distance >= SHRINK_FAR) return min;
-		double t = (Math.log(distance) - LOG_SHRINK_NEAR) / (LOG_SHRINK_FAR - LOG_SHRINK_NEAR);
-		return (float) Mth.lerp(t, 1.0, min);
+	static float distanceScale(double distance, boolean shrink) {
+		if (!shrink || distance <= REF_DISTANCE) return 1.0f;
+		return (float) Math.max(MIN_SCALE, REF_DISTANCE / distance);
 	}
 
 	@Override
@@ -140,7 +189,6 @@ final class WaypointHud implements HudElement {
 
 		WaypyConfig config = WaypyConfig.get();
 		float iconSize = config.iconSize / 100.0f;
-		float minSize = config.minIconSize / 100.0f;
 
 		computeViewProjection(renderState, camera);
 		int guiWidth = graphics.guiWidth();
@@ -161,15 +209,15 @@ final class WaypointHud implements HudElement {
 			if (clip.w < MIN_CLIP_W) continue; // behind the camera
 			float ndcX = clip.x / clip.w;
 			float ndcY = clip.y / clip.w;
-			// Generous bounds so a marker partly on screen is still drawn.
+			// Generous bounds so a pin partly on screen is still drawn.
 			if (ndcX < -1.5f || ndcX > 1.5f || ndcY < -1.5f || ndcY > 1.5f) continue;
-			// Only the marker's anchor is snapped to a framebuffer pixel; logo and label are laid out from it with
-			// unsnapped (continuous) offsets, so they never jitter against each other while the scale changes.
+			// Only the anchor (the pin tip) is snapped to a framebuffer pixel; pin and tag are laid out from it with
+			// whole unscaled offsets, so they never jitter against each other while the scale changes.
 			float x = snap((ndcX * 0.5f + 0.5f) * guiWidth, guiScale);
 			float y = snap((0.5f - ndcY * 0.5f) * guiHeight, guiScale);
 			double distance = centre.distanceTo(cam);
-			// Continuous scales (no quantisation), so markers shrink smoothly while walking away.
-			float scale = distanceScale(distance, config.shrinkWithDistance, minSize) * iconSize;
+			// Continuous scales (no quantisation), so pins shrink smoothly while walking away.
+			float scale = distanceScale(distance, config.shrinkWithDistance) * iconSize;
 			markers.add(new Marker(waypoint, x, y, distance, scale, Math.max(MIN_LABEL_SCALE, scale)));
 		}
 		if (markers.isEmpty()) {
@@ -181,8 +229,8 @@ final class WaypointHud implements HudElement {
 		int labelBackground = minecraft.options.getBackgroundColor(LABEL_BACKGROUND_OPACITY);
 		LabelMode labelMode = config.labels;
 
-		// The text marker nearest the crosshair (if close enough) always shows its label, on top of everything.
-		// Waypoints with their text off take no part in any label decision.
+		// The text pin whose badge is nearest the crosshair (if close enough) always shows its tag, on top of
+		// everything. Waypoints with their text off take no part in any tag decision.
 		float centerX = guiWidth / 2.0f;
 		float centerY = guiHeight / 2.0f;
 		Marker focused = null;
@@ -190,7 +238,7 @@ final class WaypointHud implements HudElement {
 		for (Marker marker : markers) {
 			if (!marker.waypoint().showText) continue;
 			float ddx = marker.x() - centerX;
-			float ddy = marker.y() - centerY;
+			float ddy = marker.badgeCentreY() - centerY;
 			float distSq = ddx * ddx + ddy * ddy;
 			if (distSq <= focusedDistSq) {
 				focused = marker;
@@ -198,15 +246,15 @@ final class WaypointHud implements HudElement {
 			}
 		}
 
-		// Label decluttering, nearest first: a label whose (scaled) rectangle overlaps one already accepted is
-		// hidden, so on a collision the waypoint farther from the camera loses. The focused label is placed first.
+		// Tag decluttering, nearest first: a tag whose (scaled) rectangle overlaps one already accepted is
+		// hidden, so on a collision the waypoint farther from the camera loses. The focused tag is placed first.
 		markers.sort(Comparator.comparingDouble(Marker::distance));
 		Map<Marker, Label> shown = new IdentityHashMap<>();
 		if (labelMode != LabelMode.OFF && focused != null) {
 			shown.put(focused, label(font, focused, config.showDistance));
 		}
 		if (labelMode == LabelMode.ALWAYS) {
-			// Obstacles: accepted labels, and the logos of nearer markers (which paint over farther labels).
+			// Obstacles: accepted tags, and the pins of nearer markers (which paint over farther tags).
 			List<Rect> obstacles = new ArrayList<>();
 			for (Label label : shown.values()) obstacles.add(label.rect());
 			for (Marker marker : markers) {
@@ -224,12 +272,11 @@ final class WaypointHud implements HudElement {
 						shown.put(marker, label);
 					}
 				}
-				Rect logo = logoRect(marker);
-				if (logo != null) obstacles.add(logo);
+				obstacles.add(pinRect(marker));
 			}
 		}
 
-		// Fades: each label's opacity moves toward 1 (shown) or 0 (hidden) by frame time, so labels never pop.
+		// Fades: each tag's opacity moves toward 1 (shown) or 0 (hidden) by frame time, so tags never pop.
 		// State is kept only for markers on screen this frame (deleted or hidden waypoints drop out at once).
 		float step = frameMillis / LABEL_FADE_MILLIS;
 		Map<Marker, Float> alphas = new IdentityHashMap<>();
@@ -249,14 +296,14 @@ final class WaypointHud implements HudElement {
 		}
 		labelAlpha.keySet().retainAll(onScreen);
 
-		// Paint far to near, so nearer logos (and labels) draw on top; the focused label goes last.
+		// Paint far to near, so nearer pins (and tags) draw on top; the focused tag goes last.
 		for (int i = markers.size() - 1; i >= 0; i--) {
 			Marker marker = markers.get(i);
-			drawLogo(graphics, marker);
+			drawPin(graphics, font, marker);
 			Float alpha = alphas.get(marker);
 			if (alpha != null && marker != focused) {
 				Label label = shown.get(marker);
-				// A label fading out is no longer placed, but still drawn where it would be.
+				// A tag fading out is no longer placed, but still drawn where it would be.
 				if (label == null) label = label(font, marker, config.showDistance);
 				drawLabel(graphics, font, label, labelBackground, alpha);
 			}
@@ -274,8 +321,8 @@ final class WaypointHud implements HudElement {
 	}
 
 	/**
-	 * A name/distance label: its text origin ({@code x}, {@code y}), pose scale, unscaled text width and
-	 * its on-screen rectangle (scaled background plus margin), in GUI coordinates.
+	 * A name tag: its text origin ({@code x}, {@code y}), pose scale, unscaled text width and its on-screen
+	 * rectangle (scaled plate plus margin), in GUI coordinates.
 	 */
 	private record Label(Component text, float x, float y, float scale, int width, Rect rect) {
 	}
@@ -287,12 +334,11 @@ final class WaypointHud implements HudElement {
 		}
 	}
 
-	/** The on-screen rectangle of a marker's logo, as drawn by {@link #drawLogo}; null if it has none. */
-	private static @Nullable Rect logoRect(Marker marker) {
-		if (marker.waypoint().logoType != LogoType.BLOCK) return null;
+	/** The on-screen rectangle of a marker's pin (badge and pointer), as drawn by {@link #drawPin}. */
+	private static Rect pinRect(Marker marker) {
 		float s = marker.logoScale();
-		return new Rect(marker.x() - LOGO_HALF_HEIGHT * s, marker.y() - LOGO_HALF_HEIGHT * s,
-				marker.x() + LOGO_HALF_HEIGHT * s, marker.y() + LOGO_HALF_HEIGHT * s);
+		return new Rect(marker.x() + BADGE_LEFT * s, marker.y() + BADGE_TOP * s,
+				marker.x() - BADGE_LEFT * s, marker.y());
 	}
 
 	private static Label label(Font font, Marker marker, boolean showDistance) {
@@ -302,28 +348,63 @@ final class WaypointHud implements HudElement {
 				: Component.literal(waypoint.name);
 		int width = font.width(text);
 		float s = marker.labelScale();
-		float x = marker.x() - width * s / 2.0f;
-		// Below the (scaled) logo, then the gap and the 1 px of background above the glyphs' top padding.
-		float y = marker.y() + (LOGO_HALF_HEIGHT + LABEL_GAP) * marker.logoScale() + s;
-		// Background rectangle as drawn by drawLabel, plus a margin so labels never touch.
+		// The plate spans x-1 .. x+width (the font's trailing 1 px spacing is the right padding) and y-1 .. y+8;
+		// it is centred on the tip with a whole-pixel offset and ends TAG_GAP above the (pin-scaled) badge.
+		float plateBottom = marker.y() + (BADGE_TOP - TAG_GAP) * marker.logoScale();
+		float x = marker.x() + (1 - (width + 1) / 2) * s;
+		float y = plateBottom - (font.lineHeight - 1) * s;
 		return new Label(text, x, y, s, width, new Rect(
-				x - 2 * s - LABEL_MARGIN, y - 2 * s - LABEL_MARGIN,
-				x + (width + 1) * s + LABEL_MARGIN, y + font.lineHeight * s + LABEL_MARGIN));
+				x - s - LABEL_MARGIN, y - s - LABEL_MARGIN,
+				x + width * s + LABEL_MARGIN, plateBottom + LABEL_MARGIN));
 	}
 
-	private void drawLogo(GuiGraphicsExtractor graphics, Marker marker) {
+	/** Draws the pin (badge, icon or initial, pointer), scaled about its tip. Pins are always opaque. */
+	private void drawPin(GuiGraphicsExtractor graphics, Font font, Marker marker) {
 		Waypoint waypoint = marker.waypoint();
-		if (waypoint.logoType != LogoType.BLOCK) return; // NONE: no logo, the label keeps its place
+		PinColors colors = PinColors.of(waypoint.color);
 		float s = marker.logoScale();
 		graphics.pose().pushMatrix();
-		// Like vanilla's scaled GUI items (e.g. recipe toasts): translate to the icon's top-left, then scale the pose.
-		graphics.pose().translate(marker.x() - LOGO_HALF_HEIGHT * s, marker.y() - LOGO_HALF_HEIGHT * s);
+		graphics.pose().translate(marker.x(), marker.y());
 		graphics.pose().scale(s, s);
-		graphics.item(logoStack(waypoint.logoBlock), 0, 0);
+
+		int l = BADGE_LEFT, t = BADGE_TOP, r = -BADGE_LEFT, b = BADGE_TOP + BADGE_SIZE;
+		// Badge: fill, then a 1 px shade ring; the four corner pixels stay empty.
+		graphics.fill(l + 1, t + 1, r - 1, b - 1, colors.fill());
+		graphics.fill(l + 1, t, r - 1, t + 1, colors.shade());
+		graphics.fill(l + 1, b - 1, r - 1, b, colors.shade());
+		graphics.fill(l, t + 1, l + 1, b - 1, colors.shade());
+		graphics.fill(r - 1, t + 1, r, b - 1, colors.shade());
+		// Stepped pointer: rows 6, 4 and 2 px wide; the last row ends at the tip (y 0).
+		for (int row = 0; row < POINTER_HEIGHT; row++) {
+			int half = POINTER_HEIGHT - row;
+			graphics.fill(-half, b + row, half, b + row + 1, colors.shade());
+		}
+
+		if (waypoint.logoType == LogoType.BLOCK) {
+			graphics.item(logoStack(waypoint.logoBlock), -8, t + 2);
+		} else {
+			drawInitial(graphics, font, waypoint.name, colors, t);
+		}
 		graphics.pose().popMatrix();
 	}
 
-	/** Draws a label at {@code alpha} opacity (0..1, from its fade). */
+	/** The name's initial (upper case), centred in the badge whose top is {@code top}; a 2x2 dot for no name. */
+	private static void drawInitial(GuiGraphicsExtractor graphics, Font font, String name, PinColors colors, int top) {
+		String trimmed = name.strip();
+		int centreY = top + BADGE_SIZE / 2;
+		if (trimmed.isEmpty()) {
+			if (colors.textShadow()) graphics.fill(0, centreY, 2, centreY + 2, TEXT_SHADOW);
+			graphics.fill(-1, centreY - 1, 1, centreY + 1, colors.text());
+			return;
+		}
+		String initial = new String(Character.toChars(Character.toUpperCase(trimmed.codePointAt(0))));
+		// font.width includes the 1 px spacing column the drop shadow uses, so glyph + shadow is centred;
+		// the 7 px glyph plus its 1 px shadow row (8 rows) are centred vertically.
+		int x = -font.width(initial) / 2;
+		graphics.text(font, initial, x, centreY - 4, colors.text(), colors.textShadow());
+	}
+
+	/** Draws a tag at {@code alpha} opacity (0..1, from its fade). */
 	private static void drawLabel(GuiGraphicsExtractor graphics, Font font, Label label, int labelBackground, float alpha) {
 		int textColor = ARGB.color(Math.round(alpha * 255.0f), 0xFFFFFF);
 		if (ARGB.alpha(textColor) == 0) return;
@@ -332,7 +413,7 @@ final class WaypointHud implements HudElement {
 		graphics.pose().scale(label.scale(), label.scale());
 		int background = ARGB.multiplyAlpha(labelBackground, alpha);
 		if (ARGB.alpha(background) != 0) {
-			graphics.fill(-2, -2, label.width() + 1, font.lineHeight, background);
+			graphics.fill(-1, -1, label.width(), font.lineHeight - 1, background);
 		}
 		graphics.text(font, label.text(), 0, 0, textColor, false);
 		graphics.pose().popMatrix();

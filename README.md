@@ -56,9 +56,8 @@ Open them with the **Settings...** button at the top right of the menu. They app
 | Setting | Default | What it does |
 |---|---|---|
 | Waypoint Render Distance | 512 blocks | Beacon beams and block highlights farther away are not drawn; the logo and label stay. 16–4096 blocks or Unlimited. |
-| Icon Size | 100% | Size of logos and labels, 50–200%. |
-| Shrink with Distance | ON | Logos and labels shrink smoothly from full size at 16 blocks to the minimum size at 256 blocks. Labels never get smaller than 50%. |
-| Minimum Size | 50% | Size of far logos when shrinking, 25–100%. |
+| Icon Size | 100% | Size of the waypoint pins and their name tags, 50–200%. |
+| Shrink with Distance | ON | Pins shrink with distance like real objects (perspective): full size up to 16 blocks, half size at 32, quarter at 64, never smaller than a fixed 35% so far waypoints stay visible. Name tags never get smaller than 50%. |
 | Labels | Always | Always, Looking At (only the waypoint nearest the crosshair) or Off. Applies to waypoints whose Text is on. Labels fade in and out. |
 | Distance in Label | ON | Show the distance after the name. |
 

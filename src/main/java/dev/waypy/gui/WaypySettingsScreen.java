@@ -8,7 +8,6 @@ import org.jspecify.annotations.Nullable;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
-import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.options.OptionsSubScreen;
@@ -29,7 +28,6 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 	private final OptionInstance<Integer> renderDistance;
 	private final OptionInstance<Integer> iconSize;
 	private final OptionInstance<Boolean> shrink;
-	private final OptionInstance<Integer> minIconSize;
 	private final OptionInstance<LabelMode> labels;
 	private final OptionInstance<Boolean> showDistance;
 
@@ -56,13 +54,7 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 		shrink = OptionInstance.createBoolean("waypy.settings.shrink",
 				OptionInstance.cachedConstantTooltip(Component.translatable("waypy.settings.shrink.tooltip")),
 				config.shrinkWithDistance,
-				value -> {
-					config.shrinkWithDistance = value;
-					updateMinIconSizeActive();
-				});
-
-		minIconSize = percentOption("waypy.settings.min_icon_size", WaypyConfig.MIN_MIN_ICON_SIZE, WaypyConfig.MAX_MIN_ICON_SIZE,
-				config.minIconSize, value -> config.minIconSize = value);
+				value -> config.shrinkWithDistance = value);
 
 		LabelMode[] modes = LabelMode.values();
 		labels = new OptionInstance<>("waypy.settings.labels",
@@ -96,22 +88,8 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 	protected void addOptions() {
 		if (list == null) return;
 		list.addBig(renderDistance);
-		list.addBig(iconSize);
-		list.addSmall(shrink, minIconSize);
+		list.addSmall(iconSize, shrink);
 		list.addSmall(labels, showDistance);
-	}
-
-	@Override
-	protected void init() {
-		super.init();
-		updateMinIconSizeActive();
-	}
-
-	/** "Minimum icon size" only matters while shrinking is on. */
-	private void updateMinIconSizeActive() {
-		if (list == null) return;
-		AbstractWidget widget = list.findOption(minIconSize);
-		if (widget != null) widget.active = config.shrinkWithDistance;
 	}
 
 	@Override

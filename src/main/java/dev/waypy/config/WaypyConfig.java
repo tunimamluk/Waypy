@@ -45,9 +45,6 @@ public final class WaypyConfig {
 	public static final int DEFAULT_ICON_SIZE = 100;
 	public static final int MIN_ICON_SIZE = 50;
 	public static final int MAX_ICON_SIZE = 200;
-	public static final int DEFAULT_MIN_ICON_SIZE = 50;
-	public static final int MIN_MIN_ICON_SIZE = 25;
-	public static final int MAX_MIN_ICON_SIZE = 100;
 	/** Granularity of the percentage sliders. */
 	public static final int PERCENT_STEP = 5;
 
@@ -71,10 +68,8 @@ public final class WaypyConfig {
 	public int waypointRenderDistance = DEFAULT_RENDER_DISTANCE;
 	/** Global logo/label size, percent. */
 	public int iconSize = DEFAULT_ICON_SIZE;
-	/** Shrink markers from full size at 16 blocks to {@link #minIconSize} at 256 blocks. */
+	/** Shrink markers with distance (perspective: full size up to 16 blocks, half at 32, down to a fixed floor). */
 	public boolean shrinkWithDistance = true;
-	/** Size of far markers when shrinking, percent of full size. */
-	public int minIconSize = DEFAULT_MIN_ICON_SIZE;
 	public LabelMode labels = LabelMode.ALWAYS;
 	/** Show the distance after the name in labels. */
 	public boolean showDistance = true;
@@ -94,7 +89,6 @@ public final class WaypyConfig {
 		waypointRenderDistance = other.waypointRenderDistance;
 		iconSize = other.iconSize;
 		shrinkWithDistance = other.shrinkWithDistance;
-		minIconSize = other.minIconSize;
 		labels = other.labels;
 		showDistance = other.showDistance;
 		sanitize();
@@ -149,7 +143,6 @@ public final class WaypyConfig {
 	void sanitize() {
 		waypointRenderDistance = snapRenderDistance(waypointRenderDistance);
 		iconSize = snapPercent(iconSize, MIN_ICON_SIZE, MAX_ICON_SIZE);
-		minIconSize = snapPercent(minIconSize, MIN_MIN_ICON_SIZE, MAX_MIN_ICON_SIZE);
 		if (labels == null) labels = LabelMode.ALWAYS;
 	}
 
