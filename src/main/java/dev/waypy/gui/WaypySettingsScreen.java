@@ -13,6 +13,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.options.OptionsSubScreen;
 import net.minecraft.network.chat.Component;
 
+import dev.waypy.WaypyClient;
 import dev.waypy.config.LabelMode;
 import dev.waypy.config.WaypyConfig;
 
@@ -31,6 +32,7 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 	private final OptionInstance<LabelMode> labels;
 	private final OptionInstance<Boolean> showDistance;
 	private final OptionInstance<Integer> groupCombineDistance;
+	private final OptionInstance<Boolean> showWaypoints;
 
 	public WaypySettingsScreen(@Nullable Screen lastScreen) {
 		this(lastScreen, Minecraft.getInstance().options);
@@ -77,6 +79,13 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 				new OptionInstance.SliderableEnum<>(WaypyConfig.COMBINE_DISTANCE_STEPS, Codec.INT),
 				config.groupCombineDistance,
 				value -> config.groupCombineDistance = value);
+
+		// The inverse of "hide all" (the Hide/Show All Waypoints key): the same flag, saved when the screen closes.
+		showWaypoints = OptionInstance.createBoolean("waypy.settings.show_waypoints",
+				OptionInstance.cachedConstantTooltip(Component.translatable("waypy.settings.show_waypoints.tooltip",
+						WaypyClient.toggleAllKey.getTranslatedKeyMessage())),
+				!config.hideAll,
+				value -> config.hideAll = !value);
 	}
 
 	/** A 5%-step percentage slider over {@code [min, max]}. */
@@ -95,6 +104,7 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 	@Override
 	protected void addOptions() {
 		if (list == null) return;
+		list.addBig(showWaypoints);
 		list.addBig(renderDistance);
 		list.addSmall(iconSize, shrink);
 		list.addSmall(labels, showDistance);

@@ -53,6 +53,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import dev.waypy.WaypyClient;
+import dev.waypy.config.WaypyConfig;
 import dev.waypy.waypoint.LogoType;
 import dev.waypy.waypoint.Waypoint;
 import dev.waypy.waypoint.WaypointGroup;
@@ -88,6 +89,7 @@ public class WaypointScreen extends Screen {
 	private static final Component OPACITY_LABEL = Component.translatable("waypy.gui.opacity");
 	private static final Component THROUGH_BLOCKS_LABEL = Component.translatable("waypy.gui.through_blocks");
 	private static final Component VISIBLE_LABEL = Component.translatable("waypy.gui.visible");
+	private static final Component VISIBLE_GROUP_TOOLTIP = Component.translatable("waypy.gui.visible.group_tooltip");
 	private static final Component SHOW_TEXT_LABEL = Component.translatable("waypy.gui.show_text");
 	private static final Component SHOW_TEXT_TOOLTIP = Component.translatable("waypy.gui.show_text.tooltip");
 	private static final Component SHOW_TEXT_GROUP_TOOLTIP = Component.translatable("waypy.gui.show_text.group_tooltip");
@@ -109,6 +111,8 @@ public class WaypointScreen extends Screen {
 	private static final int MULTI_OUTLINE = 0xFFA0A0A0;
 	/** Space under the list for the "+ New here" / "Delete" row: 5 + 20 + 3. */
 	private static final int LIST_BUTTON_ROW = 28;
+	/** Space between the "all waypoints are hidden" notice and the list under it. */
+	private static final int NOTICE_GAP = 3;
 	private static final int SIDE_MARGIN = 10;
 	private static final int COLUMN_GAP = 10;
 	/** Width {@link ScrollableLayout} adds to the right of the editor for its scrollbar (4 spacing + 6 bar). */
@@ -150,6 +154,8 @@ public class WaypointScreen extends Screen {
 	private boolean twoColumns;
 
 	private @Nullable WaypointList list;
+	/** "All waypoints are hidden (press Y)" above the list while hide-all is on (empty otherwise); set in init(). */
+	private List<FormattedCharSequence> hiddenNotice = List.of();
 	private @Nullable Button newHereButton;
 	private @Nullable Button deleteButton;
 	private @Nullable Button undoButton;
@@ -193,8 +199,14 @@ public class WaypointScreen extends Screen {
 		computeGeometry();
 
 		int top = layout.getHeaderHeight();
-		int listHeight = Math.max(ENTRY_HEIGHT, layout.getContentHeight() - LIST_BUTTON_ROW);
-		list = addRenderableWidget(new WaypointList(minecraft, listWidth, listHeight, top));
+		// While "hide all" is on, a grey notice line sits at the top of the list column and the list starts under it.
+		// (Hide-all only changes from outside this screen: the key in game, or the settings screen, which re-inits this.)
+		hiddenNotice = WaypyConfig.get().hideAll
+				? font.split(Component.translatable("waypy.gui.all_hidden", WaypyClient.toggleAllKey.getTranslatedKeyMessage()), listWidth - 8)
+				: List.of();
+		int noticeHeight = hiddenNotice.isEmpty() ? 0 : NOTICE_GAP + hiddenNotice.size() * font.lineHeight + NOTICE_GAP;
+		int listHeight = Math.max(ENTRY_HEIGHT, layout.getContentHeight() - LIST_BUTTON_ROW - noticeHeight);
+		list = addRenderableWidget(new WaypointList(minecraft, listWidth, listHeight, top + noticeHeight));
 		list.setX(listX);
 
 		newHereButton = addRenderableWidget(Button.builder(NEW_HERE, b -> createHere()).size(0, Button.DEFAULT_HEIGHT).build());
@@ -500,6 +512,12 @@ public class WaypointScreen extends Screen {
 		nameBox = nameBox(g.name, g::setName);
 		colorWidgets(() -> g.color, color -> g.color = color);
 		logoWidgets(half, () -> g.logoType, type -> g.logoType = type, () -> g.logoBlock, id -> g.logoBlock = id);
+		visibleButton = CycleButton.onOffBuilder(g.visible)
+				.create(0, 0, half, Button.DEFAULT_HEIGHT, VISIBLE_LABEL, (button, value) -> {
+					g.visible = value; // the members' own Visible flags are left alone
+					manager.markDirty();
+				});
+		visibleButton.setTooltip(Tooltip.create(VISIBLE_GROUP_TOOLTIP));
 		showTextButton = showTextButton(half, g.showText, value -> g.showText = value, SHOW_TEXT_GROUP_TOOLTIP);
 		ungroupButton = Button.builder(UNGROUP, b -> ungroupSelected())
 				.size(half, Button.DEFAULT_HEIGHT).tooltip(Tooltip.create(UNGROUP_TOOLTIP)).build();
@@ -773,7 +791,8 @@ public class WaypointScreen extends Screen {
 	}
 
 	private void layoutGroupEditor(WaypointGroup g) {
-		if (nameBox == null || hexBox == null || logoTypeButton == null || logoBlockButton == null || showTextButton == null || ungroupButton == null) {
+		if (nameBox == null || hexBox == null || logoTypeButton == null || logoBlockButton == null || visibleButton == null
+				|| showTextButton == null || ungroupButton == null) {
 			return;
 		}
 		editorContent.addChild(new StringWidget(Component.translatable("waypy.gui.group_members", g.size()), font));
@@ -783,15 +802,20 @@ public class WaypointScreen extends Screen {
 
 		Button logoDetail = g.logoType == LogoType.BLOCK ? logoBlockButton : null;
 		if (twoColumns) {
+			// Logo | block button, then Visible | Text (as in the waypoint editor), then Ungroup in the left column.
 			LinearLayout row1 = LinearLayout.horizontal().spacing(COLUMN_GAP);
 			row1.addChild(logoTypeButton);
-			row1.addChild(showTextButton);
+			if (logoDetail != null) row1.addChild(logoDetail);
 			editorContent.addChild(row1, s -> s.paddingTop(4));
-			if (logoDetail != null) editorContent.addChild(logoDetail); // under "Logo", in the left column
+			LinearLayout row2 = LinearLayout.horizontal().spacing(COLUMN_GAP);
+			row2.addChild(visibleButton);
+			row2.addChild(showTextButton);
+			editorContent.addChild(row2);
 			editorContent.addChild(ungroupButton); // alone on its row, in the left column
 		} else {
 			editorContent.addChild(logoTypeButton, s -> s.paddingTop(4));
 			if (logoDetail != null) editorContent.addChild(logoDetail);
+			editorContent.addChild(visibleButton);
 			editorContent.addChild(showTextButton);
 			editorContent.addChild(ungroupButton);
 		}
@@ -953,6 +977,16 @@ public class WaypointScreen extends Screen {
 		return removeFromGroupButton;
 	}
 
+	/** The "Visible" cycle button of the waypoint or group editor (null otherwise). For the devtest. */
+	public @Nullable CycleButton<Boolean> visibleButton() {
+		return visibleButton;
+	}
+
+	/** Whether the "All waypoints are hidden" notice is shown above the list. For the devtest. */
+	public boolean showsHiddenNotice() {
+		return !hiddenNotice.isEmpty();
+	}
+
 	/** The X, Y and Z boxes of the editor (empty without a selection). For the devtest. */
 	public List<EditBox> coordinateBoxes() {
 		return List.copyOf(coordBoxes);
@@ -974,6 +1008,12 @@ public class WaypointScreen extends Screen {
 		Identifier footer = inWorld ? INWORLD_FOOTER_SEPARATOR : FOOTER_SEPARATOR;
 		graphics.blit(RenderPipelines.GUI_TEXTURED, header, 0, layout.getHeaderHeight() - 2, 0.0F, 0.0F, width, 2, 32, 2);
 		graphics.blit(RenderPipelines.GUI_TEXTURED, footer, 0, height - layout.getFooterHeight(), 0.0F, 0.0F, width, 2, 32, 2);
+
+		int noticeY = layout.getHeaderHeight() + NOTICE_GAP;
+		for (FormattedCharSequence line : hiddenNotice) {
+			graphics.text(font, line, listX + 4, noticeY, LIGHT_GRAY);
+			noticeY += font.lineHeight;
+		}
 
 		if (selected == null && selectedGroup == null) {
 			Component hint = Component.translatable("waypy.gui.no_waypoints", WaypyClient.createKey.getTranslatedKeyMessage());
@@ -1196,14 +1236,20 @@ public class WaypointScreen extends Screen {
 				swatch(graphics, x, getContentYMiddle() - 8, waypoint.color);
 				int textX = x + 16 + 4;
 				int maxWidth = getContentRight() - textX;
-				graphics.text(font, ellipsize(font, waypoint.name, maxWidth), textX, y + 1, waypoint.visible ? 0xFFFFFFFF : GRAY);
+				// Greyed when not shown: hidden itself, or (own Visible on) hidden by its group, which the detail line says.
+				boolean shown = manager.isEffectivelyVisible(waypoint);
+				graphics.text(font, ellipsize(font, waypoint.name, maxWidth), textX, y + 1, shown ? 0xFFFFFFFF : GRAY);
 				graphics.text(font, ellipsize(font, detailText().getString(), maxWidth), textX, y + 11, GRAY);
 			}
 
-			/** Distance (or dimension), plus the block count for clumps: {@code 24m · 12 blocks}. */
+			/**
+			 * Distance (or dimension), plus the block count for clumps: {@code 24m · 12 blocks}; then
+			 * {@code · group hidden} when only its group hides it.
+			 */
 			private Component detailText() {
 				Component distance = distanceText(waypoint.centre(), waypoint.dimension);
-				return waypoint.isClump() ? Component.translatable("waypy.gui.block_count", distance, waypoint.size()) : distance;
+				Component detail = waypoint.isClump() ? Component.translatable("waypy.gui.block_count", distance, waypoint.size()) : distance;
+				return manager.isHiddenByGroup(waypoint) ? Component.translatable("waypy.gui.group_hidden_detail", detail) : detail;
 			}
 
 			@Override
@@ -1237,7 +1283,7 @@ public class WaypointScreen extends Screen {
 				graphics.fill(x, swatchY + 4, x + 12, swatchY + 16, 0xFF000000 | group.color);
 				int textX = x + 16 + 4;
 				int maxWidth = getContentRight() - textX;
-				graphics.text(font, ellipsize(font, group.name, maxWidth), textX, y + 1, 0xFFFFFFFF);
+				graphics.text(font, ellipsize(font, group.name, maxWidth), textX, y + 1, group.visible ? 0xFFFFFFFF : GRAY);
 				List<Waypoint> members = manager.members(group);
 				Component detail = Component.translatable("waypy.gui.group_detail", members.size(),
 						distanceText(centre(members), group.dimension));

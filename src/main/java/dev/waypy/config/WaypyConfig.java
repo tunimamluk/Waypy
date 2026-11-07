@@ -85,6 +85,12 @@ public final class WaypyConfig {
 	public boolean showDistance = true;
 	/** The distance (blocks) beyond which a group is drawn combined, as one pin. One value for all groups. */
 	public int groupCombineDistance = DEFAULT_COMBINE_DISTANCE;
+	/**
+	 * "Hide all": nothing of Waypy is drawn (world visuals and HUD pins, groups included) while on. Toggled by the
+	 * Hide/Show All Waypoints key (and the settings' "Show Waypoints" option, its inverse); saved at once so it
+	 * survives restarts. The N key and the menu keep working.
+	 */
+	public boolean hideAll = false;
 
 	// ---------------------------------------------------------------- access
 
@@ -104,6 +110,7 @@ public final class WaypyConfig {
 		labels = other.labels;
 		showDistance = other.showDistance;
 		groupCombineDistance = other.groupCombineDistance;
+		hideAll = other.hideAll;
 		sanitize();
 	}
 

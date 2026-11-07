@@ -39,6 +39,11 @@ public final class WaypointGroup {
 	public Identifier logoBlock;
 	/** Show the group pin's name tag (if the global Labels setting allows it). Off for new groups. */
 	public boolean showText = false;
+	/**
+	 * Show the group at all. A hidden group hides every member (beams, highlights, pins) and draws no group pin; the
+	 * members' own {@link Waypoint#visible} flags are left as they are. See {@link WaypointManager#isEffectivelyVisible}.
+	 */
+	public boolean visible = true;
 
 	private final List<UUID> members = new ArrayList<>();
 	private final List<UUID> membersView = Collections.unmodifiableList(members);

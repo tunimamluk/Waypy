@@ -38,6 +38,8 @@ public final class WaypyClient implements ClientModInitializer {
 
 	public static KeyMapping createKey;
 	public static KeyMapping menuKey;
+	/** Hide/Show All Waypoints (default Y): toggles {@link WaypyConfig#hideAll}. */
+	public static KeyMapping toggleAllKey;
 	/**
 	 * Held with {@link #createKey} at the press: use the looked-at block instead of the block stood on. Default Left
 	 * Shift. Vanilla keeps every mapping of a key in {@code KeyMapping.MAP} and updates them all, so sharing the key
@@ -55,6 +57,8 @@ public final class WaypyClient implements ClientModInitializer {
 				new KeyMapping("key.waypy.menu", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_M, CATEGORY));
 		lookModifierKey = KeyMappingHelper.registerKeyMapping(
 				new KeyMapping("key.waypy.look_modifier", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_LEFT_SHIFT, CATEGORY));
+		toggleAllKey = KeyMappingHelper.registerKeyMapping(
+				new KeyMapping("key.waypy.toggle_all", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_Y, CATEGORY));
 
 		WaypyConfig.load();
 
@@ -71,9 +75,30 @@ public final class WaypyClient implements ClientModInitializer {
 					client.gui.setScreen(new WaypointScreen(manager.selected().orElse(null)));
 				}
 			}
+			while (toggleAllKey.consumeClick()) {
+				if (client.player != null && client.gui.screen() == null) toggleHideAll(client);
+			}
 		});
 
 		WaypointRenderer.init();
+	}
+
+	/**
+	 * The Hide/Show All Waypoints key: flips {@link WaypyConfig#hideAll}, saves the config at once (so it survives a
+	 * restart) and says so in the action bar, naming the key.
+	 *
+	 * @return the new value of {@code hideAll}
+	 */
+	public static boolean toggleHideAll(Minecraft client) {
+		WaypyConfig config = WaypyConfig.get();
+		config.hideAll = !config.hideAll;
+		WaypyConfig.save();
+		if (client.player != null) {
+			client.player.sendOverlayMessage(Component.translatable(
+					config.hideAll ? "waypy.message.all_hidden" : "waypy.message.all_shown",
+					toggleAllKey.getTranslatedKeyMessage()));
+		}
+		return config.hideAll;
 	}
 
 	/**

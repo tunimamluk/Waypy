@@ -207,11 +207,24 @@ final class WaypointHud implements HudElement {
 		return (float) Math.max(MIN_SCALE, REF_DISTANCE / distance);
 	}
 
+	/**
+	 * How many pins (waypoints and combined groups, on screen) the last frame drew; 0 when nothing was drawn. Read by
+	 * the devtest (by reflection). Render thread only.
+	 */
+	static int lastPinCount;
+
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, DeltaTracker deltaTracker) {
 		long now = Util.getNanos();
 		float frameMillis = lastFrameNanos == 0L ? 0.0f : Math.clamp((now - lastFrameNanos) / 1.0e6f, 0.0f, MAX_FRAME_MILLIS);
 		lastFrameNanos = now;
+		lastPinCount = 0;
+
+		if (!WaypointRenderer.enabled()) { // "hide all": no pins, tags or group pins; fades start over afterwards
+			labelAlpha.clear();
+			combineAlpha.clear();
+			return;
+		}
 
 		Minecraft minecraft = Minecraft.getInstance();
 		if (minecraft.level == null || minecraft.player == null) {
@@ -351,6 +364,7 @@ final class WaypointHud implements HudElement {
 		}
 		labelAlpha.keySet().retainAll(onScreen);
 
+		lastPinCount = markers.size();
 		// Paint far to near, so nearer pins (and tags) draw on top; the focused tag goes last.
 		for (int i = markers.size() - 1; i >= 0; i--) {
 			Marker marker = markers.get(i);

@@ -74,7 +74,15 @@ final class WorldWaypointRenderer {
 		return dx * dx + dy * dy + dz * dz;
 	}
 
+	/**
+	 * How many waypoints the last frame submitted a beam or highlight for (counted before frustum culling, after the
+	 * distance and group checks). 0 when nothing was drawn. Read by the devtest (by reflection). Render thread only.
+	 */
+	static int lastSubmitCount;
+
 	static void collectSubmits(LevelRenderContext context) {
+		lastSubmitCount = 0;
+		if (!WaypointRenderer.enabled()) return; // "hide all": nothing of Waypy is drawn
 		Minecraft minecraft = Minecraft.getInstance();
 		ClientLevel level = minecraft.level;
 		if (level == null) return;
@@ -100,6 +108,7 @@ final class WorldWaypointRenderer {
 		for (Waypoint waypoint : waypoints) {
 			if (combined.contains(waypoint)) continue;
 			if (distanceSqTo(waypoint, camera.pos) > cutoffSq) continue;
+			lastSubmitCount++;
 			if (waypoint.isBeacon()) { // single block only: a clump is always a highlight
 				submitBeam(waypoint, level, camera, poseStack, collector, animationTime, scoping);
 			} else {

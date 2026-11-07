@@ -7,6 +7,7 @@ import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 import net.minecraft.resources.Identifier;
 
 import dev.waypy.WaypyClient;
+import dev.waypy.config.WaypyConfig;
 
 /**
  * Entry point of waypoint rendering.
@@ -22,6 +23,15 @@ public final class WaypointRenderer {
 	public static final Identifier HUD_ID = Identifier.fromNamespaceAndPath(WaypyClient.MOD_ID, "waypoints");
 
 	private WaypointRenderer() {
+	}
+
+	/**
+	 * False while "hide all" is on ({@link WaypyConfig#hideAll}): both render entry points
+	 * ({@link WorldWaypointRenderer#collectSubmits} and {@link WaypointHud#extractRenderState}) return before drawing
+	 * anything, groups included.
+	 */
+	public static boolean enabled() {
+		return !WaypyConfig.get().hideAll;
 	}
 
 	public static void init() {

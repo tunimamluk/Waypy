@@ -65,7 +65,9 @@ import dev.waypy.waypoint.WaypointStyle;
  * "Walk Test" (east of the spawn, text on) is used alone for the walking-away (shrink smoothness) screenshots.
  * Group "Mine Area" (east of the spawn, out of the main view), made with {@link WaypointManager#createGroup} (the menu's
  * "Make group"): "Mine Entrance" (iron block), "Ore Vein" (a 3-block coal-ore clump) and "Mine Storage" (a barrel,
- * BEACON), all with text on. Seen near (members) and from beyond its 15-block combine distance (one group pin).
+ * BEACON), all with text on. Seen near (members) and from beyond its 15-block combine distance (one group pin), then
+ * hidden as a whole (and shown again) far and near; near, beside the temporary group "Camp" ("Camp Fire", "Camp Bed"),
+ * which is also used for the hide-all (Y key) checks and removed afterwards.
  */
 final class Scenario {
 	private static final int SURFACE_Y = -61; // top grass block of the default superflat
@@ -97,6 +99,10 @@ final class Scenario {
 	private Waypoint oreVein;
 	private Waypoint mineStorage;
 	private WaypointGroup mineArea;
+	/** A temporary second group next to Mine Area, for the hidden-group shot. */
+	private Waypoint campFire;
+	private Waypoint campBed;
+	private WaypointGroup camp;
 	/** A waypoint in the Nether, to check that a group can't span dimensions. */
 	private Waypoint netherProbe;
 	/** The waypoint deleted for the real-time undo expiry check, and when. */
@@ -911,9 +917,121 @@ final class Scenario {
 		step("check default combine distance restored", this::noPendingScreenshots, () -> {
 			check(combined(mineArea), "Mine Area not combined again at ~35 blocks after restoring the default combine distance");
 			DevtestClient.log("ASSERT ok: global combine distance 50 -> Mine Area separate, default 15 -> combined, same camera position");
+			check(hudPins() == 1 && worldSubmits() == 0, "combined Mine Area alone: " + hudPins() + " pins, " + worldSubmits() + " world");
+			mineArea.visible = false; // hide the whole group (far: it was combined)
+		}, 10);
+		step("check hidden group (far)", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			for (Waypoint w : wm.members(mineArea)) {
+				check(w.visible && !wm.isEffectivelyVisible(w) && wm.isHiddenByGroup(w), "member " + w.name + " not hidden by its group");
+			}
+			check(!inCombinerViews(mineArea), "a hidden group is still in the combiner's views");
+			check(hudPins() == 0 && worldSubmits() == 0, "hidden Mine Area still drawn: " + hudPins() + " pins, " + worldSubmits() + " world");
+			DevtestClient.log("ASSERT ok: Mine Area hidden (far): members' own visible kept, isEffectivelyVisible false, no group pin "
+					+ "(combiner dropped it), HUD pins 0, world submits 0");
+			mineArea.visible = true;
+		}, 10);
+		step("check shown group (far), go near", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			for (Waypoint w : wm.members(mineArea)) check(wm.isEffectivelyVisible(w), "member " + w.name + " not visible again");
+			check(inCombinerViews(mineArea) && combined(mineArea) && hudPins() == 1 && worldSubmits() == 0,
+					"Mine Area shown again (far): combined=" + combined(mineArea) + " " + hudPins() + " pins, " + worldSubmits() + " world");
+			DevtestClient.log("ASSERT ok: Mine Area shown again (far): combined group pin back (HUD pins 1)");
+			// A second group, "Camp", in view of the near position, to show beside the hidden Mine Area.
+			var dim = mc.level.dimension();
+			campFire = wm.create(new BlockPos(38, SURFACE_Y, 18), dim, Identifier.withDefaultNamespace("campfire"));
+			campFire.setName("Camp Fire");
+			campFire.color = 0xF9801D;
+			campFire.showText = true;
+			campBed = wm.create(new BlockPos(36, SURFACE_Y, 19), dim, Identifier.withDefaultNamespace("red_bed"));
+			campBed.setName("Camp Bed");
+			campBed.color = 0xB02E26;
+			campBed.showText = true;
+			camp = wm.createGroup(List.of(campFire, campBed));
+			check(camp != null, "Camp not created");
+			camp.setName("Camp");
+			command("tp @a 42.8 " + (FEET_Y + 2) + " 10.5 0 5");
+		}, 40);
+		step("wait for chunks (group near again)", chunksReady(), () -> {
+		}, 10);
+		step("near: hide Mine Area", this::noPendingScreenshots, () -> {
+			check(!combined(mineArea) && hudPins() == 5 && worldSubmits() == 5,
+					"near, both groups shown: " + hudPins() + " pins, " + worldSubmits() + " world");
+			mineArea.visible = false;
+		}, 10);
+		step("near: check hidden Mine Area", this::noPendingScreenshots, () -> {
+			check(hudPins() == 2 && worldSubmits() == 2, "near, Mine Area hidden: " + hudPins() + " pins, " + worldSubmits() + " world");
+			DevtestClient.log("ASSERT ok: near, Mine Area hidden: only Camp's 2 pins and 2 highlights remain (49_group_hidden)");
+		}, 2);
+		screenshot("49_group_hidden");
+		step("near: show Mine Area, hide all (Y key)", this::noPendingScreenshots, () -> {
+			mineArea.visible = true;
+			check(!WaypyConfig.get().hideAll, "hideAll on before the toggle");
+			check(WaypyClient.toggleHideAll(mc), "toggle did not turn hideAll on");
+		}, 10);
+		step("check hide all", this::noPendingScreenshots, () -> {
+			check(hudPins() == 0 && worldSubmits() == 0, "hide all: still " + hudPins() + " pins, " + worldSubmits() + " world");
+			WaypyConfig.load(); // persisted: the saved file has it
+			check(WaypyConfig.get().hideAll, "hideAll not saved to config/waypy.json");
+			DevtestClient.log("ASSERT ok: hide all on: render entry points draw nothing (HUD pins 0, world submits 0), "
+					+ "saved to the config file (49b_world_hide_all shows the action-bar message)");
+		}, 2);
+		screenshot("49b_world_hide_all");
+		step("show all again (Y key)", this::noPendingScreenshots, () -> {
+			check(!WaypyClient.toggleHideAll(mc), "toggle did not turn hideAll off");
+			WaypyConfig.load();
+			check(!WaypyConfig.get().hideAll, "hideAll off not saved");
+		}, 10);
+		step("check shown again, clean up", this::noPendingScreenshots, () -> {
+			check(hudPins() == 5 && worldSubmits() == 5, "after show all: " + hudPins() + " pins, " + worldSubmits() + " world");
+			DevtestClient.log("ASSERT ok: hide all off: everything back (HUD pins 5, world submits 5), saved off");
+			WaypointManager wm = WaypointManager.get();
+			wm.remove(campFire.id);
+			wm.remove(campBed.id);
+			wm.expireDeletions(true);
+			check(wm.groupById(camp.id).isEmpty(), "Camp left behind");
 			for (Waypoint w : hidden) w.visible = true;
 			command("tp @a 0.5 " + FEET_Y + " 0.5 0 8");
 		}, 20);
+	}
+
+	/** Whether {@code GroupCombiner.compute} (what both renderers draw from) lists the group now (by reflection). */
+	private boolean inCombinerViews(WaypointGroup group) {
+		try {
+			Class<?> cls = Class.forName("dev.waypy.render.GroupCombiner");
+			java.lang.reflect.Method compute = cls.getDeclaredMethod("compute", net.minecraft.resources.ResourceKey.class,
+					net.minecraft.world.phys.Vec3.class);
+			compute.setAccessible(true);
+			List<?> views = (List<?>) compute.invoke(null, mc.level.dimension(), mc.gameRenderer.mainCamera().position());
+			for (Object view : views) {
+				java.lang.reflect.Method g = view.getClass().getDeclaredMethod("group");
+				g.setAccessible(true);
+				if (g.invoke(view) == group) return true;
+			}
+			return false;
+		} catch (ReflectiveOperationException e) {
+			throw new IllegalStateException("could not run the group combiner", e);
+		}
+	}
+
+	/** Pins the HUD drew last frame (render package, by reflection). */
+	private static int hudPins() {
+		return renderCounter("dev.waypy.render.WaypointHud", "lastPinCount");
+	}
+
+	/** Waypoints the world renderer submitted a beam or highlight for last frame (render package, by reflection). */
+	private static int worldSubmits() {
+		return renderCounter("dev.waypy.render.WorldWaypointRenderer", "lastSubmitCount");
+	}
+
+	private static int renderCounter(String className, String field) {
+		try {
+			java.lang.reflect.Field f = Class.forName(className).getDeclaredField(field);
+			f.setAccessible(true);
+			return f.getInt(null);
+		} catch (ReflectiveOperationException e) {
+			throw new IllegalStateException("could not read " + className + "." + field, e);
+		}
 	}
 
 	/**
@@ -992,6 +1110,29 @@ final class Scenario {
 			mc.resizeGui();
 			mc.gui.setScreen(null);
 		}, 5);
+		step("menu: hidden group, hide all notice", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			mineArea.visible = false;
+			mineStorage.visible = false; // hidden itself too: greyed without "group hidden"
+			WaypyConfig.get().hideAll = true; // not saved: just for the notice
+			screen[0] = new WaypointScreen(null);
+			mc.gui.setScreen(screen[0]);
+			screen[0].clickGroup(mineArea);
+			check(screen[0].showsHiddenNotice(), "no 'All waypoints are hidden' notice");
+			check(screen[0].visibleButton() != null && !screen[0].visibleButton().getValue(), "group editor Visible not OFF");
+			check(wm.isHiddenByGroup(oreVein) && !wm.isHiddenByGroup(mineStorage) && !wm.isEffectivelyVisible(mineStorage),
+					"group-hidden state of the members wrong");
+			DevtestClient.log("ASSERT ok: menu: hide-all notice shown, group editor Visible OFF, Ore Vein 'group hidden', Mine Storage hidden itself");
+		}, 10);
+		screenshot("54_menu_group_hidden");
+		step("menu: restore group and hide all, close", this::noPendingScreenshots, () -> {
+			mineArea.visible = true;
+			mineStorage.visible = true;
+			WaypyConfig.get().hideAll = false;
+			mc.gui.setScreen(new WaypointScreen(null));
+			check(mc.gui.screen() instanceof WaypointScreen sc && !sc.showsHiddenNotice(), "notice shown with hideAll off");
+			mc.gui.setScreen(null);
+		}, 5);
 	}
 
 	/** Every group (name, fields, members) of the world, for exact before/after comparisons. */
@@ -1001,7 +1142,7 @@ final class Scenario {
 		for (WaypointGroup g : wm.groups()) {
 			out.append(g.id).append(" \"").append(g.name).append("\" ").append(g.dimension.identifier()).append(" color=")
 					.append(Integer.toHexString(g.color)).append(' ').append(g.logoType).append(' ').append(g.logoBlock)
-					.append(" text=").append(g.showText).append(" members=")
+					.append(" text=").append(g.showText).append(" visible=").append(g.visible).append(" members=")
 					.append(g.members()).append('\n');
 		}
 		return out.toString();
@@ -1054,12 +1195,14 @@ final class Scenario {
 		WaypointManager wm = WaypointManager.get();
 		var dim = mc.level.dimension();
 		// Groups round-trip: save, reload, the same groups (ids, fields, member order).
+		wm.groups().getFirst().visible = false; // a hidden group must round-trip hidden
+		wm.markDirty();
 		String groupsBefore = describeGroups();
-		check(!groupsBefore.isEmpty(), "no groups before the reload");
+		check(!groupsBefore.isEmpty() && groupsBefore.contains("visible=false"), "no hidden group before the reload");
 		wm.onDisconnect();
 		wm.onJoin(mc);
 		check(describeGroups().equals(groupsBefore), "groups changed by save/reload:\n" + describeGroups() + "vs\n" + groupsBefore);
-		DevtestClient.log("ASSERT ok: groups round-trip through the file:\n" + groupsBefore.strip());
+		DevtestClient.log("ASSERT ok: groups round-trip through the file (incl. visible=false):\n" + groupsBefore.strip());
 
 		// Old file: a group still carrying the removed per-group combineDistance loads fine, the field is ignored and not rewritten.
 		java.nio.file.Path groupFile = mc.gameDirectory.toPath().resolve("waypy").resolve(wm.worldKey() + ".json");
@@ -1067,14 +1210,18 @@ final class Scenario {
 		try {
 			var root = com.google.gson.JsonParser.parseString(java.nio.file.Files.readString(groupFile)).getAsJsonObject();
 			check(!root.toString().contains("combineDistance"), "combineDistance was written to the file");
-			root.getAsJsonArray("groups").get(0).getAsJsonObject().addProperty("combineDistance", 37);
+			var group = root.getAsJsonArray("groups").get(0).getAsJsonObject();
+			check(group.has("visible") && !group.get("visible").getAsBoolean(), "group visible=false not written: " + group);
+			group.addProperty("combineDistance", 37);
+			group.remove("visible"); // a file from before the group visible field: loads as shown
 			java.nio.file.Files.writeString(groupFile, new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(root));
 		} catch (java.io.IOException e) {
 			throw new IllegalStateException("could not edit the waypoint file", e);
 		}
 		wm.onJoin(mc);
-		check(describeGroups().equals(groupsBefore), "a group with an old combineDistance field loaded differently:\n" + describeGroups());
-		DevtestClient.log("ASSERT ok: old file with a per-group combineDistance still loads (field ignored)");
+		String groupsOld = groupsBefore.replace("visible=false", "visible=true");
+		check(describeGroups().equals(groupsOld), "a group with an old combineDistance field / no visible field loaded differently:\n" + describeGroups());
+		DevtestClient.log("ASSERT ok: old file with a per-group combineDistance still loads (field ignored); no group visible field -> visible=true");
 
 		Waypoint doomed = wm.create(new BlockPos(28, SURFACE_Y, -28), dim, null);
 		var doomedId = doomed.id;
@@ -1262,9 +1409,17 @@ final class Scenario {
 
 	/** Vanilla Key Binds screen, scrolled to the Waypy category. */
 	private void openKeyBinds() {
-		for (KeyMapping k : List.of(WaypyClient.createKey, WaypyClient.menuKey, WaypyClient.lookModifierKey)) {
+		for (KeyMapping k : List.of(WaypyClient.createKey, WaypyClient.menuKey, WaypyClient.lookModifierKey, WaypyClient.toggleAllKey)) {
 			check(java.util.Arrays.asList(mc.options.keyMappings).contains(k), k.getName() + " not in options.keyMappings");
 		}
+		var y = com.mojang.blaze3d.platform.InputConstants.Type.KEYSYM.getOrCreate(org.lwjgl.glfw.GLFW.GLFW_KEY_Y);
+		check(WaypyClient.toggleAllKey.getDefaultKey().equals(y), "toggle_all default is not Y: " + WaypyClient.toggleAllKey.getDefaultKey());
+		List<String> sharing = new ArrayList<>();
+		for (KeyMapping k : mc.options.keyMappings) {
+			if (k != WaypyClient.toggleAllKey && k.getDefaultKey().equals(y)) sharing.add(k.getName());
+		}
+		check(sharing.isEmpty(), "other key mappings default to Y: " + sharing);
+		DevtestClient.log("ASSERT ok: key.waypy.toggle_all defaults to Y; no other mapping (vanilla or mod) defaults to Y");
 		KeyBindsScreen screen = new KeyBindsScreen(new WaypointScreen(null), mc.options);
 		mc.gui.setScreen(screen);
 		try {

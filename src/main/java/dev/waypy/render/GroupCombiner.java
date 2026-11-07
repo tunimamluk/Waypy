@@ -19,7 +19,8 @@ import dev.waypy.waypoint.WaypointManager;
  * Decides, per frame, which groups are <b>combined</b> (drawn as one pin, members hidden), shared by the world
  * renderer and the HUD so both agree.
  *
- * <p>A group counts only its visible members; with fewer than {@link WaypointGroup#MIN_MEMBERS} visible it is never
+ * <p>A group counts only its members that are {@linkplain WaypointManager#isEffectivelyVisible effectively visible}
+ * (so a hidden group has none and draws nothing at all); with fewer than {@link WaypointGroup#MIN_MEMBERS} visible it is never
  * combined. Its centre is the centroid of those members' {@link Waypoint#centre()}s, and its distance the 3D distance
  * from the camera to that centre. The state switches with {@link #HYSTERESIS} blocks either side of the global
  * "Group Combine Distance" setting, which applies to every group (combined beyond {@code distance + 0.5}, separate
@@ -56,7 +57,8 @@ final class GroupCombiner {
 		for (WaypointGroup group : manager.groupsIn(dimension)) {
 			List<Waypoint> members = new ArrayList<>();
 			for (Waypoint w : manager.members(group)) {
-				if (w.visible) members.add(w);
+				// The shared visibility rule: a hidden group has no visible members, so it is skipped entirely.
+				if (manager.isEffectivelyVisible(w)) members.add(w);
 			}
 			if (members.size() < WaypointGroup.MIN_MEMBERS) continue;
 			double sx = 0, sy = 0, sz = 0;

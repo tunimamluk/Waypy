@@ -133,13 +133,34 @@ public final class WaypointManager {
 		return List.copyOf(out);
 	}
 
-	/** Waypoints in {@code dimension} with {@code visible == true}; a fresh list the caller may keep. Used by rendering. */
+	/**
+	 * Waypoints in {@code dimension} that are {@linkplain #isEffectivelyVisible effectively visible}; a fresh list the
+	 * caller may keep. Used by rendering.
+	 */
 	public synchronized List<Waypoint> visibleIn(ResourceKey<Level> dimension) {
 		List<Waypoint> out = new ArrayList<>();
 		for (Waypoint w : waypoints) {
-			if (w.visible && w.dimension.equals(dimension)) out.add(w);
+			if (w.dimension.equals(dimension) && isEffectivelyVisible(w)) out.add(w);
 		}
 		return out;
+	}
+
+	/**
+	 * Whether a waypoint is shown: its own {@link Waypoint#visible} flag and, for a group member, its group's
+	 * {@link WaypointGroup#visible} too. The one visibility rule every renderer uses (beams, highlights, pins, the group
+	 * combiner's member count and the tag overlap), via {@link #visibleIn} or directly. (The global "hide all" switch is
+	 * separate: the render entry points check it before anything else.)
+	 */
+	public synchronized boolean isEffectivelyVisible(Waypoint waypoint) {
+		if (!waypoint.visible) return false;
+		WaypointGroup group = groupByMember.get(waypoint.id);
+		return group == null || group.visible;
+	}
+
+	/** Whether the waypoint's own flag is on but its group is hidden (the menu says "group hidden"). */
+	public synchronized boolean isHiddenByGroup(Waypoint waypoint) {
+		WaypointGroup group = groupByMember.get(waypoint.id);
+		return waypoint.visible && group != null && !group.visible;
 	}
 
 	public synchronized Optional<Waypoint> byId(UUID id) {
@@ -769,6 +790,7 @@ public final class WaypointManager {
 		o.addProperty("logoType", g.logoType.name());
 		o.addProperty("logoBlock", g.logoBlock.toString());
 		o.addProperty("showText", g.showText);
+		o.addProperty("visible", g.visible);
 		JsonArray members = new JsonArray();
 		for (UUID id : g.members()) members.add(id.toString());
 		o.add("members", members);
@@ -793,6 +815,7 @@ public final class WaypointManager {
 				parseColor(o.get("color")), logo);
 		g.logoType = parseEnum(LogoType.class, o, "logoType", LogoType.BLOCK);
 		if (o.has("showText")) g.showText = o.get("showText").getAsBoolean();
+		g.visible = !o.has("visible") || o.get("visible").getAsBoolean(); // files from before the field: shown
 		JsonElement members = o.get("members");
 		if (members != null && members.isJsonArray()) {
 			for (JsonElement m : members.getAsJsonArray()) {

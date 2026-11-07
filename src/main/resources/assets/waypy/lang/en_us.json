@@ -3,6 +3,7 @@
   "key.waypy.create": "Create/Delete Waypoint",
   "key.waypy.menu": "Open Waypoint Menu",
   "key.waypy.look_modifier": "Look-at Modifier",
+  "key.waypy.toggle_all": "Hide/Show All Waypoints",
   "waypy.screen.title": "Waypy",
   "waypy.message.removed": "Waypoint \"%s\" removed – press %s to undo",
   "waypy.message.restored": "Waypoint \"%s\" restored",
@@ -15,6 +16,8 @@
   "waypy.message.clump_limit": "Clump limit reached (%s blocks)",
   "waypy.message.no_block": "No block in sight",
   "waypy.message.no_block_below": "No block below you",
+  "waypy.message.all_hidden": "All waypoints hidden – press %s to show",
+  "waypy.message.all_shown": "Waypoints shown – press %s to hide",
   "waypy.render.label": "%s (%sm)",
   "waypy.render.group_label": "%s (%s) (%sm)",
   "waypy.render.group_label.no_distance": "%s (%s)",
@@ -65,6 +68,9 @@
   "waypy.gui.opacity": "Opacity",
   "waypy.gui.through_blocks": "Render through blocks",
   "waypy.gui.visible": "Visible",
+  "waypy.gui.visible.group_tooltip": "Hide or show the whole group: its waypoints and its group pin. The waypoints' own Visible settings are kept",
+  "waypy.gui.group_hidden_detail": "%s · group hidden",
+  "waypy.gui.all_hidden": "All waypoints are hidden (press %s)",
   "waypy.gui.show_text": "Text",
   "waypy.gui.show_text.tooltip": "Show the name and distance under the logo (if the Labels setting allows it)",
   "waypy.gui.show_text.group_tooltip": "Show the group's name, waypoint count and distance on its pin (if the Labels setting allows it)",
@@ -91,5 +97,7 @@
   "waypy.settings.show_distance": "Distance in Label",
   "waypy.settings.show_distance.tooltip": "Show the distance in meters after the waypoint name.",
   "waypy.settings.group_combine_distance": "Group Combine Distance",
-  "waypy.settings.group_combine_distance.tooltip": "Applies to all groups: farther away than this, a group is shown as one pin instead of its waypoints."
+  "waypy.settings.group_combine_distance.tooltip": "Applies to all groups: farther away than this, a group is shown as one pin instead of its waypoints.",
+  "waypy.settings.show_waypoints": "Show Waypoints",
+  "waypy.settings.show_waypoints.tooltip": "OFF hides everything Waypy draws (beams, highlights and pins), like the Hide/Show All Waypoints key (%s). The menu and the create key still work."
 }
