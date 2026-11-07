@@ -8,11 +8,15 @@ Waypy is a client-side waypoint mod for Fabric on Minecraft 26.2. Mark places in
 - [Fabric Loader](https://fabricmc.net/use/) 0.20.1 or newer
 - [Fabric API](https://modrinth.com/mod/fabric-api)
 
+## Download
+
+- **Modrinth:** [modrinth.com/mod/waypy](https://modrinth.com/mod/waypy) (once the project is published)
+- **GitHub:** the prebuilt jar in this repository, [`dist/waypy-1.0.0-beta.1.jar`](dist/waypy-1.0.0-beta.1.jar)
+
 ## Install
 
-Put the jar in your `.minecraft/mods` folder.
+Put the jar in your `.minecraft/mods` folder, next to Fabric API.
 
-- A prebuilt jar is committed at [`dist/waypy-0.9.0.jar`](dist/waypy-0.9.0.jar).
 - CI also builds the jar on every push. Open the Actions tab, pick a run and download the `waypy-jar` artifact.
 
 ## Controls
@@ -114,6 +118,10 @@ Settings are saved in `<.minecraft>/config/waypy.json`.
 ## Where waypoints are saved
 
 Waypoints and groups are stored per world in `<.minecraft>/waypy/<world>.json`.
+
+## License
+
+MIT, see [`LICENSE`](LICENSE).
 
 ## Building from source
 

@@ -3,9 +3,14 @@
 	"id": "waypy",
 	"version": "${version}",
 	"name": "Waypy",
-	"description": "Client-side waypoints with beacon beams, block highlights and logos.",
-	"authors": ["Waypy"],
+	"description": "Client-side waypoints: mark blocks or whole areas with beacon beams or highlights and coloured pins, group them, and reuse looks and layouts with presets.",
+	"authors": ["tunimamluk"],
+	"contact": {
+		"sources": "https://github.com/tunimamluk/Waypy",
+		"issues": "https://github.com/tunimamluk/Waypy/issues"
+	},
 	"license": "MIT",
+	"icon": "assets/waypy/icon.png",
 	"environment": "client",
 	"entrypoints": {
 		"client": ["dev.waypy.WaypyClient"]
