@@ -42,18 +42,17 @@ import dev.waypy.waypoint.WaypointStyle;
  * column of 204-wide vanilla buttons over the blurred, dimmed world.
  *
  * <p><b>List</b> (the popup as it opens): the title with a small "+" button at the column's right edge, a grey
- * {@code Applies to: <waypoint>} line (or {@code Look at or stand on a waypoint}), a search box and one button per
+ * {@code Applies to: <waypoint>} line, a search box and one button per
  * preset ({@code 1  Home}, with the logo icon on the left and a colour swatch on the right), in a scrollable column.
- * The target waypoint is fixed when the popup opens ({@link WaypyClient#findTargetWaypoint}).
+ * The target waypoint is fixed when the popup opens ({@link WaypyClient#openPresets}); the popup never opens without one.
  * <ul>
  *   <li>Click a preset, or press its number key (1–9) while the search box is not focused: apply it to the target
- *       ({@link Preset#applyTo}), show {@code Applied "<preset>" to "<waypoint>"} and close. Without a target the
- *       preset buttons are inactive and number keys do nothing.</li>
+ *       ({@link Preset#applyTo}), and close (silently, no message).</li>
  *   <li>Search: unfocused when the popup opens. Typing a letter (any printable character but a digit) focuses it and
  *       types the character. Filters by name, case-insensitive; the buttons keep their real numbers. Enter in the box
  *       applies the first match. Esc in the box clears it (and unfocuses it) if it has text, else closes.</li>
  *   <li>Right-click a preset: edit it in the inline form (with Delete).</li>
- *   <li>"+": the inline form for a new preset, copied from the target (or the new-waypoint defaults).</li>
+ *   <li>"+": the inline form for a new preset, copied from the target.</li>
  * </ul>
  *
  * <p><b>Form</b> (the same screen, switched over): Name, colour (swatches and hex), Style, Logo (Block / None and the
@@ -71,13 +70,9 @@ public class PresetScreen extends Screen {
 
 	private static final Component TITLE = Component.translatable("waypy.presets.title");
 	private static final Component SEARCH = Component.translatable("waypy.presets.search");
-	private static final Component NO_TARGET = Component.translatable("waypy.presets.no_target");
-	private static final Component NO_TARGET_TOOLTIP = Component.translatable("waypy.presets.no_target.tooltip");
 	private static final Component EMPTY = Component.translatable("waypy.presets.empty");
 	private static final Component NO_MATCH = Component.translatable("waypy.presets.no_match");
-	private static final Component NEW_DEFAULTS_TOOLTIP = Component.translatable("waypy.presets.new.tooltip.default");
 	private static final Component FORM_NEW = Component.translatable("waypy.presets.form.new");
-	private static final Component FORM_DEFAULTS = Component.translatable("waypy.presets.form.defaults");
 	private static final Component SAVE = Component.translatable("waypy.presets.save");
 	private static final Component DELETE = Component.translatable("waypy.gui.delete");
 	private static final Component DELETE_TOOLTIP = Component.translatable("waypy.presets.delete.tooltip");
@@ -118,8 +113,8 @@ public class PresetScreen extends Screen {
 
 	private final WaypointManager waypoints = WaypointManager.get();
 	private final PresetManager presets = PresetManager.get();
-	/** The waypoint presets apply to, found when the popup opened; null = none (preset buttons inactive). */
-	private final @Nullable Waypoint target;
+	/** The waypoint presets apply to, found when the popup opened. */
+	private final Waypoint target;
 	/** Opened by the presets key, which may still be held: its repeats must not type into the search box. */
 	private boolean ignoreOpenKey;
 	private long swallowCharAt = -1;
@@ -158,10 +153,10 @@ public class PresetScreen extends Screen {
 	private @Nullable Button deleteButton;
 
 	/**
-	 * @param target   the waypoint presets apply to (null: none)
+	 * @param target   the waypoint presets apply to
 	 * @param fromKey  opened by the presets key: while that key stays held, its key repeats are ignored
 	 */
-	public PresetScreen(@Nullable Waypoint target, boolean fromKey) {
+	public PresetScreen(Waypoint target, boolean fromKey) {
 		super(TITLE);
 		this.target = target;
 		this.ignoreOpenKey = fromKey && WaypyClient.presetsKey != null && WaypyClient.presetsKey.isDown();
@@ -212,8 +207,7 @@ public class PresetScreen extends Screen {
 		addRenderableWidget(new StringWidget(width / 2 - titleWidth / 2, top + 6, titleWidth, font.lineHeight, title, font));
 		plusButton = addRenderableWidget(Button.builder(Component.literal("+"), b -> openNewForm())
 				.bounds(columnX + COLUMN_WIDTH - ROW, top, ROW, ROW)
-				.tooltip(Tooltip.create(target != null
-						? Component.translatable("waypy.presets.new.tooltip", target.name) : NEW_DEFAULTS_TOOLTIP))
+				.tooltip(Tooltip.create(Component.translatable("waypy.presets.new.tooltip", target.name)))
 				.build());
 
 		EditBox search = new EditBox(font, columnX, top + SEARCH_Y, COLUMN_WIDTH, ROW, SEARCH);
@@ -257,16 +251,10 @@ public class PresetScreen extends Screen {
 
 	// ------------------------------------------------------------------ form
 
-	/** "+": the inline form for a new preset, copied from the target (named after it) or from the new-waypoint defaults. */
+	/** "+": the inline form for a new preset, copied from the target (named after it). */
 	public void openNewForm() {
-		int number = presets.nextNumber();
-		if (target != null) {
-			draft = Preset.from(target, target.name);
-			formSubtitle = Component.translatable("waypy.presets.form.copied", target.name);
-		} else {
-			draft = new Preset(Component.translatable("waypy.presets.default_name", number).getString(), waypoints.peekNextColor());
-			formSubtitle = FORM_DEFAULTS;
-		}
+		draft = Preset.from(target, target.name);
+		formSubtitle = Component.translatable("waypy.presets.form.copied", target.name);
 		editingNumber = 0;
 		mode = Mode.FORM;
 		rebuildWidgets();
@@ -457,24 +445,20 @@ public class PresetScreen extends Screen {
 	// ------------------------------------------------------------------ applying
 
 	/**
-	 * Applies {@code preset} to the target (see {@link Preset#applyTo}), marks the waypoints dirty, says so in the
-	 * action bar and closes the popup. Does nothing without a target (or if it was deleted meanwhile).
+	 * Applies {@code preset} to the target (see {@link Preset#applyTo}), marks the waypoints dirty and closes the
+	 * popup, without any message. Does nothing if the target was deleted meanwhile.
 	 *
 	 * @return true if it was applied
 	 */
 	public boolean applyPreset(Preset preset) {
-		Waypoint w = target;
-		if (w == null || waypoints.byId(w.id).isEmpty()) return false;
-		preset.applyTo(w);
+		if (waypoints.byId(target.id).isEmpty()) return false;
+		preset.applyTo(target);
 		waypoints.markDirty();
-		if (minecraft.player != null) {
-			minecraft.player.sendOverlayMessage(Component.translatable("waypy.message.preset_applied", preset.name, w.name));
-		}
 		onClose();
 		return true;
 	}
 
-	/** A number key: applies preset {@code number} (if it exists and there is a target). */
+	/** A number key: applies preset {@code number} (if it exists). */
 	public boolean applyNumber(int number) {
 		Preset preset = presets.byNumber(number);
 		return preset != null && applyPreset(preset);
@@ -611,9 +595,7 @@ public class PresetScreen extends Screen {
 			graphics.centeredText(font, formSubtitle, centerX, top + 22, GRAY);
 			return;
 		}
-		Component applies = target != null
-				? Component.translatable("waypy.presets.applies_to", Component.literal(target.name).withStyle(ChatFormatting.WHITE))
-				: NO_TARGET;
+		Component applies = Component.translatable("waypy.presets.applies_to", Component.literal(target.name).withStyle(ChatFormatting.WHITE));
 		graphics.centeredText(font, font.split(applies, width - 8).getFirst(), centerX, top + APPLIES_Y, GRAY);
 		if (presetButtons.isEmpty()) {
 			Component hint = presets.size() == 0 ? EMPTY : NO_MATCH;
@@ -628,7 +610,7 @@ public class PresetScreen extends Screen {
 	}
 
 	/** The waypoint presets apply to (fixed when the popup opened). */
-	public @Nullable Waypoint target() {
+	public Waypoint target() {
 		return target;
 	}
 
@@ -686,7 +668,7 @@ public class PresetScreen extends Screen {
 
 	/**
 	 * One preset: a full-width vanilla button reading {@code 1  Home}, with the logo's item icon on the left and a
-	 * small swatch of the preset colour on the right. Inactive (with the reason as tooltip) without a target.
+	 * small swatch of the preset colour on the right.
 	 */
 	private final class PresetButton extends Button {
 		private final Preset preset;
@@ -699,9 +681,7 @@ public class PresetScreen extends Screen {
 			this.preset = preset;
 			this.number = number;
 			this.icon = preset.logoType == LogoType.BLOCK ? WaypointScreen.stackFor(preset.logoBlock) : null;
-			active = target != null;
-			setTooltip(Tooltip.create(target == null ? NO_TARGET_TOOLTIP
-					: number <= 9 ? Component.translatable("waypy.presets.button.tooltip", number)
+			setTooltip(Tooltip.create(number <= 9 ? Component.translatable("waypy.presets.button.tooltip", number)
 					: Component.translatable("waypy.presets.button.tooltip.no_key")));
 		}
 

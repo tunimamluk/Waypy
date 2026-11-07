@@ -1236,6 +1236,36 @@ final class Scenario {
 		parkMouse(2, mc.getWindow().getGuiScaledHeight() - 2);
 	}
 
+	/** The action bar (overlay) message state of the HUD, read by reflection: the mod must send none. */
+	private static java.lang.reflect.Field hudField(String name) throws ReflectiveOperationException {
+		java.lang.reflect.Field field = net.minecraft.client.gui.Hud.class.getDeclaredField(name);
+		field.setAccessible(true);
+		return field;
+	}
+
+	private void clearOverlay() {
+		try {
+			hudField("overlayMessageString").set(mc.gui.hud, null);
+			hudField("overlayMessageTime").setInt(mc.gui.hud, 0);
+		} catch (ReflectiveOperationException e) {
+			throw new IllegalStateException("cannot clear the HUD overlay message", e);
+		}
+	}
+
+	/** True if an action-bar message is currently showing. */
+	private boolean overlayShown() {
+		try {
+			return hudField("overlayMessageString").get(mc.gui.hud) != null && hudField("overlayMessageTime").getInt(mc.gui.hud) > 0;
+		} catch (ReflectiveOperationException e) {
+			throw new IllegalStateException("cannot read the HUD overlay message", e);
+		}
+	}
+
+	/** The target of the open Presets popup, for failure messages. */
+	private String presetTarget() {
+		return mc.gui.screen() instanceof PresetScreen p ? p.target().name : "no popup";
+	}
+
 	private PresetScreen openPresets(Waypoint target) {
 		presetScreen = new PresetScreen(target, false);
 		mc.gui.setScreen(presetScreen);
@@ -1243,9 +1273,10 @@ final class Scenario {
 	}
 
 	/**
-	 * The Presets popup (H): creates the six canvas presets through the "+" form, checks the target lookup (look-at
-	 * first, then the block stood on), applying (number key, click, search + Enter; a BEACON preset on a clump; no
-	 * target), the search keys, "+" prefill, right-click edit and Delete (renumbering), the block picker round trip,
+	 * The Presets popup (H): creates the six canvas presets through the "+" form, checks the real H handling
+	 * ({@link WaypyClient#openPresets}: plain = the waypoint stood on, look mode = the one looked at, no fallback; no
+	 * target = nothing happens, no message), applying (number key, click, search + Enter; a BEACON preset on a
+	 * clump), the search keys, "+" prefill, right-click edit and Delete (renumbering), the block picker round trip,
 	 * the JSON round trip and the corrupt-file fallback; with screenshots of each state.
 	 */
 	private void presetChecks() {
@@ -1270,25 +1301,44 @@ final class Scenario {
 			// Stand on Doorstep, looking at Base Camp's top face 4 blocks ahead (eye 1.62 above the face: atan(1.62/4) = 22°).
 			command("tp @a -11.5 " + FEET_Y + " 2.5 0 22");
 		}, 30);
-		step("presets: target lookup (look-at, then underfoot, then none)", this::noPendingScreenshots, () -> {
-			check(WaypyClient.findTargetWaypoint(mc) == presetLook, "look-at target is " + WaypyClient.findTargetWaypoint(mc)
-					+ ", expected Base Camp (looked at) over Doorstep (stood on)");
+		step("presets: H plain targets the waypoint stood on, look mode the one looked at", this::noPendingScreenshots, () -> {
+			// Standing on Doorstep, looking at Base Camp.
+			check(WaypyClient.openPresets(mc, false) && mc.gui.screen() instanceof PresetScreen p && p.target() == presetUnder,
+					"plain H target is not Doorstep (stood on): " + presetTarget());
+			mc.gui.setScreen(null);
+			check(WaypyClient.openPresets(mc, true) && mc.gui.screen() instanceof PresetScreen p && p.target() == presetLook,
+					"look-mode H target is not Base Camp (looked at): " + presetTarget());
+			mc.gui.setScreen(null);
+			DevtestClient.log("ASSERT ok: standing on Doorstep, looking at Base Camp: plain H targets Doorstep, look-modifier H targets Base Camp");
 			command("tp @a -11.5 " + FEET_Y + " 2.5 0 -60"); // look up: only the block stood on
 		}, 20);
-		step("presets: target underfoot", this::noPendingScreenshots, () -> {
-			check(WaypyClient.findTargetWaypoint(mc) == presetUnder, "underfoot target is " + WaypyClient.findTargetWaypoint(mc));
-			command("tp @a -11.5 " + FEET_Y + " 9.5 0 -60"); // free grass, looking up: no target
+		step("presets: look mode at the sky does not open", this::noPendingScreenshots, () -> {
+			clearOverlay();
+			check(!WaypyClient.openPresets(mc, true) && mc.gui.screen() == null, "look-mode H opened looking at the sky: " + presetTarget());
+			check(!overlayShown(), "look-mode H with no target sent an action-bar message");
+			check(WaypyClient.openPresets(mc, false) && mc.gui.screen() instanceof PresetScreen p && p.target() == presetUnder,
+					"plain H target is not Doorstep: " + presetTarget());
+			mc.gui.setScreen(null);
+			DevtestClient.log("ASSERT ok: looking at the sky: look-modifier H does not open (no fallback to the waypoint stood on), no message; plain H still targets Doorstep");
+			command("tp @a -11.5 " + FEET_Y + " 9.5 180 28"); // free grass, looking north at Base Camp (z 6, 3 blocks away)
 		}, 20);
-		step("presets: no target, empty state", this::noPendingScreenshots, () -> {
-			check(WaypyClient.findTargetWaypoint(mc) == null, "a target was found on free ground: " + WaypyClient.findTargetWaypoint(mc));
-			DevtestClient.log("ASSERT ok: preset target = looked-at waypoint (Base Camp) before the one stood on (Doorstep); "
-					+ "stood on when looking at the sky; none on free ground");
+		step("presets: plain H on free ground does not open, shows the message", this::noPendingScreenshots, () -> {
+			check(WaypyClient.openPresets(mc, true) && mc.gui.screen() instanceof PresetScreen p && p.target() == presetLook,
+					"look-mode H on free ground is not Base Camp: " + presetTarget());
+			mc.gui.setScreen(null);
+			clearOverlay();
+			check(!WaypyClient.openPresets(mc, false) && mc.gui.screen() == null,
+					"plain H opened on free ground (no fallback to the waypoint looked at): " + presetTarget());
+			check(!overlayShown(), "plain H with no target sent an action-bar message");
+			DevtestClient.log("ASSERT ok: free ground, looking at Base Camp: look-modifier H targets Base Camp, plain H does not open (no fallback to the waypoint looked at), "
+					+ "and sends no action-bar message");
+		}, 10);
+		step("presets: empty state", this::noPendingScreenshots, () -> {
+			command("tp @a -11.5 " + FEET_Y + " 2.5 0 22");
 			PresetScreen sc = openPresets(presetLook);
 			check(sc.presetButtons().isEmpty() && sc.mode() == PresetScreen.Mode.LIST, "presets shown with none stored");
 			check(sc.searchBox() != null && !sc.searchBox().isFocused(), "search box focused on open");
 			parkMouse();
-			// Back to the spot looking at Base Camp, for the target of the next shots (the popup pauses nothing here).
-			command("tp @a -11.5 " + FEET_Y + " 2.5 0 22");
 		}, 10);
 		screenshot("66_presets_empty");
 		step("presets: create the six canvas presets via + and Save", this::noPendingScreenshots, () -> {
@@ -1325,8 +1375,9 @@ final class Scenario {
 					+ presetScreen.presetButtons().get(0).getMessage().getString());
 			DevtestClient.log("ASSERT ok: + prefilled from Base Camp (name \"Base Camp\", same settings); Save added Home..Loot as 1..6");
 			// The screenshot target: the popup as H opens it, target found by the real lookup.
-			check(WaypyClient.findTargetWaypoint(mc) == presetLook, "not looking at Base Camp");
-			mc.gui.setScreen(presetScreen = new PresetScreen(WaypyClient.findTargetWaypoint(mc), false));
+			check(WaypyClient.openPresets(mc, true) && mc.gui.screen() instanceof PresetScreen, "look-mode H did not open on Base Camp");
+			presetScreen = (PresetScreen) mc.gui.screen();
+			check(presetScreen.target() == presetLook, "not looking at Base Camp");
 			parkMouse();
 		}, 10);
 		screenshot("60_presets_list");
@@ -1336,8 +1387,10 @@ final class Scenario {
 			List<BlockPos> blocks = List.copyOf(presetLook.blocks());
 			boolean visible = presetLook.visible;
 			check(!presetScreen.searchBox().isFocused(), "search focused before the number key");
+			clearOverlay();
 			press(GLFW.GLFW_KEY_2, '2');
 			check(mc.gui.screen() == null, "popup still open after the number key");
+			check(!overlayShown(), "applying a preset sent an action-bar message");
 			check(copied(presetLook).equals(copied(mine, mine.style)), "key 2 applied " + copied(presetLook) + ", expected " + copied(mine, mine.style));
 			check(presetLook.name.equals(name) && presetLook.blocks().equals(blocks) && presetLook.visible == visible
 					&& WaypointManager.get().groupOf(presetLook.id) == null, "applying changed name/blocks/visible/group");
@@ -1354,43 +1407,13 @@ final class Scenario {
 			check(presetClump.size() == 2 && presetClump.name.equals("Wheat Field"), "clump changed");
 			DevtestClient.log("ASSERT ok: clicking Home (BEACON) on the 2-block clump kept BLOCK_HIGHLIGHT, applied the rest: " + copied(presetClump));
 		}, 5);
-		step("presets: no target", this::noPendingScreenshots, () -> {
-			command("tp @a -11.5 " + FEET_Y + " 9.5 0 -60");
-		}, 20);
-		step("presets: no target, nothing applies", this::noPendingScreenshots, () -> {
-			Waypoint target = WaypyClient.findTargetWaypoint(mc);
-			check(target == null, "unexpected target " + target);
-			List<String> before = WaypointManager.get().all().stream().map(Scenario::describe).toList();
-			PresetScreen sc = openPresets(null);
-			check(sc.presetButtons().size() == 6 && sc.presetButtons().stream().noneMatch(b -> b.active), "preset buttons active without a target");
-			check(sc.plusButton() != null && sc.plusButton().active, "+ inactive without a target");
-			press(GLFW.GLFW_KEY_1, '1');
-			clickCentre(sc, sc.presetButtons().get(2), 0);
-			check(mc.gui.screen() == sc && !sc.searchBox().isFocused() && sc.searchBox().getValue().isEmpty(),
-					"no-target key/click closed the popup or typed into the search");
-			check(WaypointManager.get().all().stream().map(Scenario::describe).toList().equals(before), "a preset applied without a target");
-			// "+" without a target starts from the new-waypoint defaults, named "Preset 7"; Cancel stores nothing.
-			int color = WaypointManager.get().peekNextColor();
-			sc.openNewForm();
-			Preset d = sc.draft();
-			check(d != null && d.name.equals("Preset 7") && d.color == color && d.style == WaypointStyle.BLOCK_HIGHLIGHT
-					&& d.logoType == LogoType.BLOCK && d.logoBlock.equals(WaypointManager.DEFAULT_LOGO) && d.highlightOpacity == 0.4f
-					&& !d.throughBlocks && !d.showText, "default draft is " + d);
-			press(GLFW.GLFW_KEY_ESCAPE, '\0');
-			check(sc.mode() == PresetScreen.Mode.LIST && PresetManager.get().size() == 6 && mc.gui.screen() == sc,
-					"Esc in the form did not cancel back to the list");
-			// Hover the last (inactive) button for its tooltip.
-			Button loot = sc.presetButtons().get(5);
-			parkMouse(loot.getX() + 24, loot.getY() + 10);
-			DevtestClient.log("ASSERT ok: no target: 6 buttons inactive, key 1 and a click change nothing; + gives defaults \"Preset 7\"; Esc cancels");
-		}, 10);
-		screenshot("65_presets_no_target");
 		step("presets: search filter", this::noPendingScreenshots, () -> {
 			command("tp @a -11.5 " + FEET_Y + " 2.5 0 22");
 			mc.gui.setScreen(null);
 		}, 20);
 		step("presets: type to search", this::noPendingScreenshots, () -> {
-			PresetScreen sc = openPresets(WaypyClient.findTargetWaypoint(mc));
+			check(WaypyClient.openPresets(mc, true), "look-mode H did not open on Base Camp");
+			PresetScreen sc = presetScreen = (PresetScreen) mc.gui.screen();
 			check(sc.target() == presetLook, "target is not Base Camp");
 			check(!sc.searchBox().isFocused(), "search focused on open");
 			type("o");

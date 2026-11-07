@@ -42,7 +42,10 @@ public final class WaypyClient implements ClientModInitializer {
 	public static KeyMapping menuKey;
 	/** Hide/Show All Waypoints (default Y): toggles {@link WaypyConfig#hideAll}. */
 	public static KeyMapping toggleAllKey;
-	/** Open Presets (default H): the presets popup for the waypoint looked at or stood on ({@link PresetScreen}). */
+	/**
+	 * Open Presets (default H): the presets popup for the waypoint stood on, or, with {@link #lookModifierKey} held at
+	 * the press, the waypoint looked at ({@link PresetScreen}); without such a waypoint it only shows a message.
+	 */
 	public static KeyMapping presetsKey;
 	/**
 	 * Held with {@link #createKey} at the press: use the looked-at block instead of the block stood on. Default Left
@@ -87,7 +90,7 @@ public final class WaypyClient implements ClientModInitializer {
 			}
 			while (presetsKey.consumeClick()) {
 				if (client.player != null && client.level != null && client.gui.screen() == null) {
-					client.gui.setScreen(new PresetScreen(findTargetWaypoint(client), true));
+					openPresets(client, lookModifierKey.isDown());
 				}
 			}
 		});
@@ -142,20 +145,30 @@ public final class WaypyClient implements ClientModInitializer {
 	}
 
 	/**
-	 * The waypoint the Presets popup applies to: the one under the crosshair (the Look-at Modifier + N raycast, up to
-	 * {@link #MAX_RAYCAST_DISTANCE} blocks), else the one whose block the player stands on (the N key's block), both
-	 * looked up with {@link WaypointManager#waypointAt} in the current dimension. Silent (no action-bar messages).
+	 * The H key: opens the Presets popup for the target waypoint. The mode is decided at the press, like the N key:
+	 * {@code lookMode} (the Look-at Modifier held) targets only the waypoint under the crosshair, plain targets only the
+	 * waypoint stood on; there is no fallback between the two. Without a target nothing happens (no popup, no message).
 	 *
-	 * @return the target, or null if neither block belongs to a waypoint
+	 * @return true if the popup opened
 	 */
-	public static @Nullable Waypoint findTargetWaypoint(Minecraft client) {
+	public static boolean openPresets(Minecraft client, boolean lookMode) {
+		Waypoint target = findTargetWaypoint(client, lookMode);
+		if (target == null) return false;
+		client.gui.setScreen(new PresetScreen(target, true));
+		return true;
+	}
+
+	/**
+	 * The waypoint the Presets popup applies to: with {@code lookMode} the one under the crosshair (the Look-at
+	 * Modifier + N raycast, up to {@link #MAX_RAYCAST_DISTANCE} blocks), else the one whose block the player stands on
+	 * (the N key's block), looked up with {@link WaypointManager#waypointAt} in the current dimension. Silent.
+	 *
+	 * @return the target, or null if that block belongs to no waypoint
+	 */
+	public static @Nullable Waypoint findTargetWaypoint(Minecraft client, boolean lookMode) {
 		if (client.player == null || client.level == null) return null;
-		WaypointManager manager = WaypointManager.get();
-		BlockPos looked = findLookedAtBlock(client, false);
-		Waypoint target = looked != null ? manager.waypointAt(looked, client.level.dimension()) : null;
-		if (target != null) return target;
-		BlockPos below = findBlockBelow(client, false);
-		return below != null ? manager.waypointAt(below, client.level.dimension()) : null;
+		BlockPos pos = lookMode ? findLookedAtBlock(client, false) : findBlockBelow(client, false);
+		return pos != null ? WaypointManager.get().waypointAt(pos, client.level.dimension()) : null;
 	}
 
 	/**
