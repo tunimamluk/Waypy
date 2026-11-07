@@ -19,6 +19,7 @@ import net.minecraft.client.gui.screens.options.controls.KeyBindsList;
 import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.Util;
 
@@ -108,6 +109,8 @@ final class Scenario {
 	/** The waypoint deleted for the real-time undo expiry check, and when. */
 	private Waypoint expiryProbe;
 	private List<BlockPos> expiryProbeBlocks;
+	/** A hidden 3-block clump that lost one block at the start of the expiry probe (its removal session expires). */
+	private Waypoint sessionProbe;
 	private long expiryProbeDeletedAt;
 
 	Scenario(Minecraft mc) {
@@ -137,6 +140,10 @@ final class Scenario {
 		step("new waypoint defaults", () -> true, this::checkDefaults, 2);
 		step("undo via N, forced expiry", () -> true, this::checkUndo, 2);
 		step("N extend, erase strokes, tap (no block undo)", () -> true, this::checkExtendOrRemove, 2);
+		step("clump restore: the whole clump comes back", () -> true, this::checkClumpRestore, 2);
+		step("look straight up (no block in sight)", () -> true, () -> command("tp @a 0.5 " + FEET_Y + " 0.5 0 -90"), 20);
+		step("no block in sight: silent", () -> true, this::checkNoBlockSilent, 2);
+		step("position player (after the sky check)", () -> true, () -> command("tp @a 0.5 " + FEET_Y + " 0.5 0 8"), 20);
 		step("groups: create, dimensions, dissolve, undo", () -> true, this::checkGroups, 2);
 		step("create group Mine Area", () -> true, this::createMineArea, 2);
 		step("start real-time undo expiry probe", () -> true, this::startExpiryProbe, 2);
@@ -391,6 +398,7 @@ final class Scenario {
 		WaypointManager wm = WaypointManager.get();
 		var dim = mc.level.dimension();
 
+		clearOverlay();
 		// A clump held over blocks of other waypoints skips them silently.
 		Waypoint temp = keys.press(mc, new BlockPos(-10, SURFACE_Y, -12), false);
 		check(temp != null, "press did not create the temporary clump");
@@ -423,8 +431,10 @@ final class Scenario {
 		keys.release(mc);
 		check(temp.size() == Waypoint.MAX_BLOCKS - 1 && !temp.contains(target) && wm.waypointAt(target, dim) == null
 				&& wm.byId(temp.id).isPresent(), "tap on a full clump's block did not remove just that block");
+		checkNoOverlay("clump limit, block tap");
 		DevtestClient.log("ASSERT ok: limit-hit hold and cancelled tap remove nothing; tap removed block " + target + " from \""
-				+ temp.name + "\" (" + temp.size() + " left); other-waypoint block skipped; cap " + Waypoint.MAX_BLOCKS + " enforced");
+				+ temp.name + "\" (" + temp.size() + " left); other-waypoint block skipped; cap " + Waypoint.MAX_BLOCKS
+				+ " enforced; no action-bar message");
 		wm.remove(temp.id);
 		wm.expireDeletions(true);
 
@@ -509,6 +519,7 @@ final class Scenario {
 		check(w.size() == 4 && w.contains(extra) && wm.waypointAt(extra, dim) == w && w.contains(blocks.get(2)),
 				"undo + hold did not extend the restored waypoint (or the release removed a block): " + w.blocks());
 		check(wm.lastDeleted().isEmpty(), "the restore-press release left an undo entry");
+		checkNoOverlay("delete + N restore");
 		DevtestClient.log("ASSERT ok: whole-waypoint undo via N restored " + before + ", then the same hold extended it to "
 				+ w.size() + " blocks; its release removed nothing");
 
@@ -553,6 +564,7 @@ final class Scenario {
 		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
 		var dim = mc.level.dimension();
 		wm.expireDeletions(true);
+		clearOverlay();
 		BlockPos b32 = new BlockPos(32, SURFACE_Y, -32), b33 = new BlockPos(33, SURFACE_Y, -32);
 		BlockPos b34 = new BlockPos(34, SURFACE_Y, -32), b35 = new BlockPos(35, SURFACE_Y, -32);
 
@@ -716,13 +728,252 @@ final class Scenario {
 		keys.release(mc);
 		check(wm.byId(single.id).isPresent() && single.blocks().equals(List.of(b38, b39, b40)), "restore + extend gave " + single.blocks());
 		for (BlockPos pos : single.blocks()) check(wm.waypointAt(pos, dim) == single, "index lacks " + pos);
+		checkNoOverlay("extend, erase strokes, taps, erase delete, restores");
 		DevtestClient.log("ASSERT ok: tap on single-block waypoint \"" + single.name + "\" deleted it; N undo then extend in the same press -> "
-				+ single.blocks());
+				+ single.blocks() + "; no action-bar message from any N action");
 
 		for (Waypoint x : List.of(w, pair, single, other, four, whole)) wm.remove(x.id);
 		wm.expireDeletions(true);
 		check(wm.groups().isEmpty(), "groups left after the erase checks: " + wm.groups());
 		wm.select(beaconBlock.id);
+	}
+
+	/** A 5-block clump (in a 3-member group, selected) for {@link #checkClumpRestore}, and its state before any change. */
+	private record RestoreFixture(Waypoint w, Waypoint p1, Waypoint p2, WaypointGroup g, List<BlockPos> blocks, String before) {
+	}
+
+	/** Builds the clump of scenario {@code i} through the N key (press + hold), with two group partners. */
+	private RestoreFixture restoreFixture(int i, List<Waypoint> created) {
+		WaypointManager wm = WaypointManager.get();
+		var dim = mc.level.dimension();
+		int x = 60 + 6 * i, z = -60;
+		List<BlockPos> blocks = List.of(new BlockPos(x, SURFACE_Y, z), new BlockPos(x + 1, SURFACE_Y, z), new BlockPos(x + 2, SURFACE_Y, z),
+				new BlockPos(x + 2, SURFACE_Y, z - 1), new BlockPos(x + 2, SURFACE_Y, z - 2));
+		Waypoint w = holdOver(WaypyClient.CREATE_KEY_HANDLER, blocks, false);
+		created.add(w);
+		check(w.blocks().equals(blocks), "restore fixture " + i + " gave " + w.blocks());
+		w.setName("Restore " + i);
+		w.color = 0x100000 * (i + 1) + 0x2468;
+		w.showText = true;
+		w.highlightOpacity = 0.6f;
+		Waypoint p1 = wm.create(new BlockPos(x, SURFACE_Y, z - 4), dim, null);
+		Waypoint p2 = wm.create(new BlockPos(x + 1, SURFACE_Y, z - 4), dim, null);
+		created.add(p1);
+		created.add(p2);
+		WaypointGroup g = wm.createGroup(List.of(p1, w, p2));
+		check(g != null, "restore fixture " + i + ": group not made");
+		wm.select(w.id);
+		return new RestoreFixture(w, p1, p2, g, blocks, describe(w));
+	}
+
+	/** The fixture's clump is back exactly as before: blocks (order, anchor), fields, index, mesh, group place, selection. */
+	private void checkRestored(RestoreFixture f, String label) {
+		WaypointManager wm = WaypointManager.get();
+		var dim = mc.level.dimension();
+		Waypoint w = f.w();
+		check(wm.byId(w.id).orElse(null) == w, label + ": not restored");
+		check(w.blocks().equals(f.blocks()), label + ": restored blocks " + w.blocks() + ", expected the full clump " + f.blocks());
+		check(describe(w).equals(f.before()), label + ": restored waypoint differs:\n  " + describe(w) + "\n  " + f.before());
+		for (BlockPos pos : f.blocks()) check(wm.waypointAt(pos, dim) == w, label + ": index lacks " + pos);
+		checkMesh(w);
+		check(wm.members(f.g()).equals(List.of(f.p1(), w, f.p2())) && wm.groupOf(w.id) == f.g(),
+				label + ": group membership not restored: " + names(wm.members(f.g())));
+		check(wm.selected().orElse(null) == w, label + ": selection is " + wm.selected().map(x -> x.name).orElse("none"));
+		check(wm.lastDeleted().map(d -> d.waypoint() != w).orElse(true), label + ": deletion still pending after the restore");
+	}
+
+	/** Deletion of the fixture's clump is pending and the clump left the world (index, list, group). */
+	private void checkDeleted(RestoreFixture f, String label) {
+		WaypointManager wm = WaypointManager.get();
+		var dim = mc.level.dimension();
+		check(wm.byId(f.w().id).isEmpty(), label + ": the clump was not deleted");
+		for (BlockPos pos : f.blocks()) check(wm.waypointAt(pos, dim) == null, label + ": index still has " + pos);
+		check(wm.members(f.g()).equals(List.of(f.p1(), f.p2())), label + ": deleted clump still in its group");
+		check(wm.lastDeleted().map(d -> d.waypoint() == f.w()).orElse(false), label + ": deletion not pending");
+	}
+
+	/**
+	 * Restoring a deleted clump brings back the WHOLE clump, as it was before the deletion and the block removals that
+	 * led to it, through the real N handler (press / extend / release with explicit targets, both modes) and the menu.
+	 * Each scenario runs on its own clump; failures are collected so one run shows every broken path.
+	 */
+	private void checkClumpRestore() {
+		WaypointManager wm = WaypointManager.get();
+		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
+		var dim = mc.level.dimension();
+		wm.expireDeletions(true);
+		List<Waypoint> created = new ArrayList<>();
+		List<String> failures = new ArrayList<>();
+		clearOverlay();
+		List<Runnable> scenarios = List.of(
+				// 1a. Menu Delete (manager path), then N underfoot on a non-anchor block; the hold runs over its own blocks.
+				() -> {
+					RestoreFixture f = restoreFixture(0, created);
+					wm.remove(f.w().id);
+					checkDeleted(f, "1a");
+					check(keys.press(mc, f.blocks().get(3), false) == f.w() && keys.hold() == CreateKeyHandler.Hold.RESTORED, "1a: no RESTORED hold");
+					checkRestored(f, "1a after the press");
+					for (BlockPos pos : f.blocks()) keys.extend(mc, pos); // own blocks while held: nothing trimmed
+					keys.release(mc);
+					checkRestored(f, "1a after the release");
+					DevtestClient.log("ASSERT ok: 1a menu-deleted clump, N underfoot on block " + f.blocks().get(3) + " restored all "
+							+ f.w().size() + " blocks " + f.w().blocks() + " (index, mesh, group, selection)");
+				},
+				// 1b. Menu Delete, then Shift+N (look-at) on the anchor, tapped (released at once).
+				() -> {
+					RestoreFixture f = restoreFixture(1, created);
+					wm.remove(f.w().id);
+					checkDeleted(f, "1b");
+					check(keys.press(mc, f.blocks().getFirst(), true) == f.w() && keys.hold() == CreateKeyHandler.Hold.RESTORED, "1b: no RESTORED hold");
+					keys.release(mc);
+					checkRestored(f, "1b");
+					DevtestClient.log("ASSERT ok: 1b menu-deleted clump, Shift+N on its anchor restored all " + f.w().size() + " blocks");
+				},
+				// 2a. An erase stroke (underfoot) over every block deletes the clump; Shift+N on a block restores the pre-stroke clump.
+				() -> {
+					RestoreFixture f = restoreFixture(2, created);
+					List<BlockPos> b = f.blocks();
+					keys.press(mc, b.get(1), false);
+					for (BlockPos pos : List.of(b.get(2), b.get(3), b.get(4), b.get(0))) keys.extend(mc, pos);
+					check(keys.isWaitingForKeyUp(), "2a: the stroke did not delete the clump");
+					keys.release(mc);
+					checkDeleted(f, "2a");
+					check(keys.press(mc, b.get(4), true) == f.w(), "2a: Shift+N did not restore");
+					keys.release(mc);
+					checkRestored(f, "2a");
+					DevtestClient.log("ASSERT ok: 2a erase stroke over all 5 blocks, Shift+N restored the full clump " + f.w().blocks());
+				},
+				// 2b. A tap removes one block, then a separate erase stroke (look-at) removes the rest: the undo restores
+				// the clump as it was before the tap (one removal session).
+				() -> {
+					RestoreFixture f = restoreFixture(3, created);
+					List<BlockPos> b = f.blocks();
+					keys.press(mc, b.get(4), false);
+					keys.release(mc);
+					check(f.w().size() == 4 && wm.lastDeleted().isEmpty(), "2b: tap did not remove one block (final)");
+					keys.press(mc, b.get(0), true);
+					for (BlockPos pos : List.of(b.get(1), b.get(2), b.get(3))) keys.extend(mc, pos);
+					keys.release(mc);
+					checkDeleted(f, "2b");
+					check(keys.press(mc, b.get(2), false) == f.w(), "2b: N did not restore");
+					keys.release(mc);
+					checkRestored(f, "2b");
+					DevtestClient.log("ASSERT ok: 2b tap + erase stroke down to zero, N restored the clump from before the tap " + f.w().blocks());
+				},
+				// 3a. Taps one by one down to the last block, then a tap on the last one; N underfoot on the last block.
+				() -> {
+					RestoreFixture f = restoreFixture(4, created);
+					List<BlockPos> b = f.blocks();
+					for (BlockPos pos : List.of(b.get(0), b.get(3), b.get(1), b.get(4))) {
+						keys.press(mc, pos, false);
+						keys.release(mc);
+					}
+					check(f.w().blocks().equals(List.of(b.get(2))) && wm.lastDeleted().isEmpty(), "3a: taps gave " + f.w().blocks());
+					int versionBefore = f.w().version();
+					keys.press(mc, b.get(2), false); // the last block: deletes the clump
+					keys.release(mc);
+					checkDeleted(f, "3a");
+					check(keys.press(mc, b.get(2), false) == f.w() && keys.hold() == CreateKeyHandler.Hold.RESTORED, "3a: N did not restore");
+					keys.release(mc);
+					checkRestored(f, "3a");
+					check(f.w().version() != versionBefore, "3a: version not bumped by the restore (cached mesh would be stale)");
+					DevtestClient.log("ASSERT ok: 3a taps down to zero, N underfoot on the last block restored all 5 blocks " + f.w().blocks());
+				},
+				// 3b. Taps (look-at) down to zero; Shift+N on a block that an EARLIER tap removed restores the whole clump.
+				() -> {
+					RestoreFixture f = restoreFixture(5, created);
+					List<BlockPos> b = f.blocks();
+					for (BlockPos pos : List.of(b.get(4), b.get(3), b.get(2), b.get(1), b.get(0))) {
+						keys.press(mc, pos, true);
+						keys.release(mc);
+					}
+					checkDeleted(f, "3b");
+					check(keys.press(mc, b.get(3), true) == f.w() && keys.hold() == CreateKeyHandler.Hold.RESTORED,
+							"3b: Shift+N on an earlier-tapped block did not restore (hold " + keys.hold() + ")");
+					keys.release(mc);
+					checkRestored(f, "3b");
+					DevtestClient.log("ASSERT ok: 3b Shift+N taps down to zero, Shift+N on an earlier-tapped block restored all 5 blocks");
+				},
+				// 4. Menu Undo (the real screen) after taps down to zero, and after a menu Delete of the clump.
+				() -> {
+					RestoreFixture f = restoreFixture(6, created);
+					List<BlockPos> b = f.blocks();
+					for (BlockPos pos : b) {
+						keys.press(mc, pos, false);
+						keys.release(mc);
+					}
+					checkDeleted(f, "4 (taps)");
+					WaypointScreen screen = new WaypointScreen(f.p1());
+					mc.gui.setScreen(screen);
+					Button undo = screen.undoButton();
+					check(undo != null && undo.visible && undo.active, "4: Undo not offered after the taps deleted the clump");
+					screen.undoDelete();
+					check(screen.selectedWaypoint() == f.w(), "4: menu Undo did not select the clump");
+					checkRestored(f, "4 menu Undo after taps");
+					screen.deleteSelected();
+					checkDeleted(f, "4 (menu Delete)");
+					screen.undoDelete();
+					checkRestored(f, "4 menu Delete + Undo");
+					mc.gui.setScreen(null);
+					DevtestClient.log("ASSERT ok: 4 menu Undo restored all 5 blocks after taps down to zero and after a menu Delete");
+				},
+				// 5. Adding a block ends the removal session: the undo restores the clump as it was after the add.
+				() -> {
+					RestoreFixture f = restoreFixture(7, created);
+					List<BlockPos> b = f.blocks();
+					keys.press(mc, b.get(4), false); // tap: removal session starts with all 5 blocks
+					keys.release(mc);
+					BlockPos extra = b.getFirst().offset(0, 0, 1);
+					keys.press(mc, b.get(0), false); // extend stroke: adds a block, ends the session
+					keys.extend(mc, extra);
+					keys.release(mc);
+					List<BlockPos> afterAdd = List.copyOf(f.w().blocks());
+					check(afterAdd.equals(List.of(b.get(0), b.get(1), b.get(2), b.get(3), extra)), "5: extend gave " + afterAdd);
+					for (BlockPos pos : afterAdd) {
+						keys.press(mc, pos, false);
+						keys.release(mc);
+					}
+					check(wm.byId(f.w().id).isEmpty(), "5: taps did not delete the clump");
+					check(keys.press(mc, extra, false) == f.w(), "5: N did not restore");
+					keys.release(mc);
+					check(f.w().blocks().equals(afterAdd) && !f.w().contains(b.get(4)) && wm.waypointAt(b.get(4), dim) == null,
+							"5: restored " + f.w().blocks() + ", expected the clump after the add " + afterAdd);
+					checkMesh(f.w());
+					DevtestClient.log("ASSERT ok: 5 an add ends the removal session: undo restored " + afterAdd + " (block removed before the add stays removed)");
+				});
+		for (int i = 0; i < scenarios.size(); i++) {
+			try {
+				scenarios.get(i).run();
+				checkNoOverlay("clump restore scenario " + i);
+			} catch (RuntimeException e) {
+				failures.add(e.getMessage());
+				DevtestClient.log("ASSERT FAIL: clump restore scenario " + i + ": " + e.getMessage());
+			} finally {
+				keys.cancel();
+				if (mc.gui.screen() != null) mc.gui.setScreen(null);
+			}
+		}
+		for (Waypoint x : created) wm.remove(x.id);
+		wm.expireDeletions(true);
+		check(wm.groups().isEmpty(), "groups left after the clump restore checks: " + wm.groups());
+		wm.select(beaconBlock.id);
+		check(failures.isEmpty(), failures.size() + " clump restore scenario(s) failed: " + failures);
+	}
+
+	/** Looking at the sky: Shift+N and "+ New here" (look-at) find no block, change nothing and say nothing. */
+	private void checkNoBlockSilent() {
+		WaypointManager wm = WaypointManager.get();
+		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
+		clearOverlay();
+		int count = wm.all().size();
+		BlockPos target = WaypyClient.findLookedAtBlock(mc);
+		check(target == null, "a block in sight while looking straight up: " + target);
+		check(keys.press(mc, target, true) == null && keys.hold() == CreateKeyHandler.Hold.NONE, "Shift+N on nothing: hold " + keys.hold());
+		keys.release(mc);
+		check(WaypyClient.createWaypoint(mc, true) == null, "a waypoint was created with no block in sight");
+		check(wm.all().size() == count, "the waypoint count changed");
+		checkNoOverlay("no block in sight");
+		DevtestClient.log("ASSERT ok: no block in sight: Shift+N and createWaypoint do nothing, no action-bar message");
 	}
 
 	/** The highlight mesh rebuilt from the waypoint's current blocks has exactly their exposed faces. */
@@ -967,18 +1218,21 @@ final class Scenario {
 		step("near: show Mine Area, hide all (Y key)", this::noPendingScreenshots, () -> {
 			mineArea.visible = true;
 			check(!WaypyConfig.get().hideAll, "hideAll on before the toggle");
-			check(WaypyClient.toggleHideAll(mc), "toggle did not turn hideAll on");
+			clearOverlay();
+			check(WaypyClient.toggleHideAll(), "toggle did not turn hideAll on");
+			checkNoOverlay("hide all");
 		}, 10);
 		step("check hide all", this::noPendingScreenshots, () -> {
 			check(hudPins() == 0 && worldSubmits() == 0, "hide all: still " + hudPins() + " pins, " + worldSubmits() + " world");
 			WaypyConfig.load(); // persisted: the saved file has it
 			check(WaypyConfig.get().hideAll, "hideAll not saved to config/waypy.json");
 			DevtestClient.log("ASSERT ok: hide all on: render entry points draw nothing (HUD pins 0, world submits 0), "
-					+ "saved to the config file (49b_world_hide_all shows the action-bar message)");
+					+ "saved to the config file, no action-bar message (49b_world_hide_all shows no text)");
 		}, 2);
 		screenshot("49b_world_hide_all");
 		step("show all again (Y key)", this::noPendingScreenshots, () -> {
-			check(!WaypyClient.toggleHideAll(mc), "toggle did not turn hideAll off");
+			check(!WaypyClient.toggleHideAll(), "toggle did not turn hideAll off");
+			checkNoOverlay("show all");
 			WaypyConfig.load();
 			check(!WaypyConfig.get().hideAll, "hideAll off not saved");
 		}, 10);
@@ -1154,6 +1408,14 @@ final class Scenario {
 	private void startExpiryProbe() {
 		WaypointManager wm = WaypointManager.get();
 		CreateKeyHandler keys = WaypyClient.CREATE_KEY_HANDLER;
+		// A clump that loses one block now: its removal session must be over by the time the probe has expired.
+		sessionProbe = holdOver(keys, List.of(new BlockPos(30, SURFACE_Y, -27), new BlockPos(31, SURFACE_Y, -27),
+				new BlockPos(32, SURFACE_Y, -27)), false);
+		sessionProbe.setName("Session Probe");
+		sessionProbe.visible = false; // out of the screenshots
+		keys.press(mc, new BlockPos(32, SURFACE_Y, -27), false);
+		keys.release(mc);
+		check(sessionProbe.size() == 2, "session probe tap gave " + sessionProbe.blocks());
 		BlockPos pos = new BlockPos(26, SURFACE_Y, -26);
 		expiryProbe = keys.press(mc, pos, false);
 		keys.release(mc);
@@ -1185,6 +1447,25 @@ final class Scenario {
 		wm.remove(created.id);
 		wm.expireDeletions(true);
 		DevtestClient.log("ASSERT ok: real-time expiry: deleted probe gone for good after " + age + " ms");
+
+		// The session probe's removal session (one tap 15+ s ago) has expired: tapping it down to zero now starts a new
+		// session, so the undo brings back the 2 blocks it had, not the 3 from before the old tap.
+		List<BlockPos> two = List.copyOf(sessionProbe.blocks());
+		check(two.size() == 2, "session probe changed: " + two);
+		for (BlockPos p : List.of(two.get(1), two.get(0))) {
+			keys.press(mc, p, false);
+			keys.release(mc);
+		}
+		check(wm.byId(sessionProbe.id).isEmpty(), "taps did not delete the session probe");
+		check(keys.press(mc, two.get(1), true) == sessionProbe, "Shift+N did not restore the session probe");
+		keys.release(mc);
+		check(sessionProbe.blocks().equals(two) && wm.waypointAt(new BlockPos(32, SURFACE_Y, -27), mc.level.dimension()) == null,
+				"session probe restored " + sessionProbe.blocks() + ", expected " + two + " (the old session had expired)");
+		for (BlockPos p : two) check(wm.waypointAt(p, mc.level.dimension()) == sessionProbe, "index lacks " + p);
+		wm.remove(sessionProbe.id);
+		wm.expireDeletions(true);
+		DevtestClient.log("ASSERT ok: a removal session ends 15 s after its last removal: taps down to zero restored " + two
+				+ " (not the block tapped 15+ s earlier)");
 	}
 
 	/**
@@ -1439,6 +1720,33 @@ final class Scenario {
 		} catch (ReflectiveOperationException e) {
 			throw new IllegalStateException("could not scroll the Key Binds list", e);
 		}
+	}
+
+	/** The HUD's action-bar (overlay) message, or null if none is set ({@code Hud.overlayMessageString}, by reflection). */
+	private Component overlayMessage() {
+		try {
+			java.lang.reflect.Field field = mc.gui.hud.getClass().getDeclaredField("overlayMessageString");
+			field.setAccessible(true);
+			return (Component) field.get(mc.gui.hud);
+		} catch (ReflectiveOperationException e) {
+			throw new IllegalStateException("could not read the overlay message", e);
+		}
+	}
+
+	private void clearOverlay() {
+		try {
+			java.lang.reflect.Field field = mc.gui.hud.getClass().getDeclaredField("overlayMessageString");
+			field.setAccessible(true);
+			field.set(mc.gui.hud, null);
+		} catch (ReflectiveOperationException e) {
+			throw new IllegalStateException("could not clear the overlay message", e);
+		}
+	}
+
+	/** Waypy's actions are silent: no action-bar message was set since the last {@link #clearOverlay}. */
+	private void checkNoOverlay(String what) {
+		Component message = overlayMessage();
+		check(message == null, what + " showed an action-bar message: \"" + (message == null ? "" : message.getString()) + "\"");
 	}
 
 	private static void check(boolean condition, String message) {

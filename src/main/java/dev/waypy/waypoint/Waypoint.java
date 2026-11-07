@@ -22,7 +22,7 @@ import net.minecraft.world.phys.Vec3;
  *
  * <p>The blocks are encapsulated: ordered (first added first), unique and never empty. The first block is the
  * {@link #anchor()}. Blocks are added only through {@link WaypointManager#addBlock}, removed only through
- * {@link WaypointManager#removeBlock} (final, no undo), which keep the manager's block index in sync, and moved only through
+ * {@link WaypointManager#removeBlock} (final: no undo of its own), which keep the manager's block index in sync, and moved only through
  * {@link WaypointManager#move}. Every change bumps {@link #version()}, so renderers can cache geometry built from the
  * blocks.
  */
@@ -140,7 +140,7 @@ public final class Waypoint {
 	/**
 	 * Replaces every block with {@code newBlocks} (in order, duplicates dropped, at most {@link #MAX_BLOCKS}); a no-op for
 	 * an empty list. Only the manager calls this, on a waypoint it has just taken out of its list and index (a
-	 * deletion by an erase stroke, whose undo brings back the blocks from before the stroke).
+	 * deletion during a removal session, whose undo brings back the blocks from before the session).
 	 */
 	void setBlocksInternal(List<BlockPos> newBlocks) {
 		if (newBlocks.isEmpty()) return;

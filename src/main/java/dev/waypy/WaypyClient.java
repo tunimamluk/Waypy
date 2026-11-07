@@ -15,7 +15,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.Item;
@@ -76,7 +75,7 @@ public final class WaypyClient implements ClientModInitializer {
 				}
 			}
 			while (toggleAllKey.consumeClick()) {
-				if (client.player != null && client.gui.screen() == null) toggleHideAll(client);
+				if (client.player != null && client.gui.screen() == null) toggleHideAll();
 			}
 		});
 
@@ -84,20 +83,15 @@ public final class WaypyClient implements ClientModInitializer {
 	}
 
 	/**
-	 * The Hide/Show All Waypoints key: flips {@link WaypyConfig#hideAll}, saves the config at once (so it survives a
-	 * restart) and says so in the action bar, naming the key.
+	 * The Hide/Show All Waypoints key: flips {@link WaypyConfig#hideAll} and saves the config at once (so it survives a
+	 * restart), silently.
 	 *
 	 * @return the new value of {@code hideAll}
 	 */
-	public static boolean toggleHideAll(Minecraft client) {
+	public static boolean toggleHideAll() {
 		WaypyConfig config = WaypyConfig.get();
 		config.hideAll = !config.hideAll;
 		WaypyConfig.save();
-		if (client.player != null) {
-			client.player.sendOverlayMessage(Component.translatable(
-					config.hideAll ? "waypy.message.all_hidden" : "waypy.message.all_shown",
-					toggleAllKey.getTranslatedKeyMessage()));
-		}
 		return config.hideAll;
 	}
 
@@ -109,7 +103,7 @@ public final class WaypyClient implements ClientModInitializer {
 	 */
 	public static @Nullable Waypoint createWaypoint(Minecraft client, boolean lookedAt) {
 		if (client.player == null || client.level == null) return null;
-		BlockPos pos = lookedAt ? findLookedAtBlock(client, true) : findBlockBelow(client, true);
+		BlockPos pos = lookedAt ? findLookedAtBlock(client) : findBlockBelow(client);
 		if (pos == null) return null;
 		return createWaypointAt(client, pos);
 	}
@@ -130,33 +124,26 @@ public final class WaypyClient implements ClientModInitializer {
 	}
 
 	/**
-	 * Block the player stands on, or the first non-air block straight below (down to min build height).
-	 *
-	 * @param report show {@code No block below you} when there is none
+	 * Block the player stands on, or the first non-air block straight below (down to min build height); null if there
+	 * is none.
 	 */
-	public static @Nullable BlockPos findBlockBelow(Minecraft client, boolean report) {
+	public static @Nullable BlockPos findBlockBelow(Minecraft client) {
 		BlockPos.MutableBlockPos cursor = client.player.getOnPos().mutable();
 		int minY = client.level.getMinY();
 		while (cursor.getY() >= minY) {
 			if (!client.level.getBlockState(cursor).isAir()) return cursor.immutable();
 			cursor.move(Direction.DOWN);
 		}
-		if (report) client.player.sendOverlayMessage(Component.translatable("waypy.message.no_block_below"));
 		return null;
 	}
 
 	/**
-	 * Raycast from the camera up to {@link #MAX_RAYCAST_DISTANCE} blocks, ignoring fluids.
-	 *
-	 * @param report show {@code No block in sight} on a miss
+	 * Raycast from the camera up to {@link #MAX_RAYCAST_DISTANCE} blocks, ignoring fluids; null on a miss.
 	 */
-	public static @Nullable BlockPos findLookedAtBlock(Minecraft client, boolean report) {
+	public static @Nullable BlockPos findLookedAtBlock(Minecraft client) {
 		Entity camera = client.getCameraEntity() != null ? client.getCameraEntity() : client.player;
 		HitResult hit = camera.pick(MAX_RAYCAST_DISTANCE, 1.0f, false);
-		if (!(hit instanceof BlockHitResult blockHit) || hit.getType() != HitResult.Type.BLOCK) {
-			if (report) client.player.sendOverlayMessage(Component.translatable("waypy.message.no_block"));
-			return null;
-		}
+		if (!(hit instanceof BlockHitResult blockHit) || hit.getType() != HitResult.Type.BLOCK) return null;
 		return blockHit.getBlockPos();
 	}
 }

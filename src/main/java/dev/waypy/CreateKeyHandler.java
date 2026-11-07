@@ -1,18 +1,16 @@
 package dev.waypy;
 
-import java.util.List;
-
 import org.jspecify.annotations.Nullable;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
-import net.minecraft.network.chat.Component;
 
 import dev.waypy.waypoint.Waypoint;
 import dev.waypy.waypoint.WaypointManager;
 
 /**
- * The "Create Waypoint" key (N) as a small state machine, run once per client tick by {@link #tick(Minecraft)}.
+ * The "Create Waypoint" key (N) as a small state machine, run once per client tick by {@link #tick(Minecraft)}. Every
+ * action is silent: the handler never shows a message.
  *
  * <ul>
  *   <li><b>Idle → press.</b> A click ({@code consumeClick}) while in game starts a hold. The mode is fixed for the
@@ -20,35 +18,31 @@ import dev.waypy.waypoint.WaypointManager;
  *       looked-at block, else the block stood on. {@link #press} picks the hold's {@link Hold kind} from the target:
  *       <ul>
  *         <li>block of a waypoint W in this dimension → {@link Hold#EXTEND_OR_REMOVE} on W (nothing changes yet);</li>
- *         <li>free block of a recently deleted waypoint (pending undo) → restored at once
- *             ({@code Waypoint "<name>" restored}), {@link Hold#RESTORED} on that waypoint;</li>
- *         <li>other free block → a new waypoint there, silently, {@link Hold#CREATED};</li>
+ *         <li>free block of a recently deleted waypoint (pending undo) → that whole waypoint restored at once
+ *             ({@link WaypointManager#undoAt}), {@link Hold#RESTORED} on it;</li>
+ *         <li>other free block → a new waypoint there, {@link Hold#CREATED};</li>
  *         <li>no block → {@link Hold#NONE}.</li>
  *       </ul></li>
  *   <li><b>Holding.</b> Each tick while the key {@code isDown()}, no screen is open and the window has focus, the target
  *       block is found again in the press mode and passed to {@link #extend}:
  *       <ul>
- *         <li>CREATED, RESTORED and {@link Hold#EXTEND}: a free block is added to the hold's waypoint, blocks of this
- *             or other waypoints are skipped silently, and at {@link Waypoint#MAX_BLOCKS} the limit message shows
- *             once.</li>
+ *         <li>CREATED, RESTORED and {@link Hold#EXTEND}: a free block is added to the hold's waypoint; blocks of this
+ *             or other waypoints are skipped, and at {@link Waypoint#MAX_BLOCKS} nothing more is added.</li>
  *         <li>EXTEND_OR_REMOVE (undecided): the FIRST target different from the start block decides the rest of the
  *             hold. A free block → {@link Hold#EXTEND} (and it is added). A block of W itself → {@link Hold#ERASE}:
  *             the start block and that block are removed. A block of another waypoint is ignored and the hold stays
  *             undecided.</li>
- *         <li>{@link Hold#ERASE}: every block of W the target moves onto is removed (final, no undo), with a live
- *             count ({@code Erasing "<name>": <n> blocks removed}); free blocks and other waypoints are ignored. If
- *             the stroke reaches W's last block, W is deleted through {@link WaypointManager#remove(java.util.UUID, List)}
- *             with its blocks from before the stroke, so the undo brings back the whole original waypoint
- *             ({@code Waypoint "<name>" removed – press N to undo}). The hold then ends and the rest of that key-down
- *             does nothing (presses are ignored until the key is released).</li>
+ *         <li>{@link Hold#ERASE}: every block of W the target moves onto is removed (final, no undo of its own); free
+ *             blocks and other waypoints are ignored. If the stroke reaches W's last block, W is deleted
+ *             ({@link WaypointManager#remove}), and its undo brings back the whole waypoint as it was before its
+ *             removal session (the manager's rule). The hold then ends and the rest of that key-down does nothing
+ *             (presses are ignored until the key is released).</li>
  *         <li>NONE: nothing.</li>
  *       </ul></li>
  *   <li><b>Release</b> ({@link #release}, key up while in game with focus): an EXTEND_OR_REMOVE hold that is still
- *       undecided is a <b>tap</b>: the start block is removed from W, final
- *       ({@code Block removed from "<name>" (<n> blocks left)}), or, if it was W's only block, W is deleted
- *       ({@code Waypoint "<name>" removed – press N to undo}, undoable for 15 s). An ERASE hold shows
- *       {@code Removed <n> blocks from "<name>" (<m> left)}. Every other release is silent and changes nothing, so a
- *       press that restored something never removes anything.</li>
+ *       undecided is a <b>tap</b>: the start block is removed from W (final, no undo of its own), or, if it was W's
+ *       only block, W is deleted (undoable for 15 s, as above). Every other release changes nothing, so a press that
+ *       restored something never removes anything.</li>
  *   <li><b>Cancel</b> ({@link #cancel}): when a screen is open, the player or level is gone, or the window lost focus,
  *       the hold just ends; an interrupted tap removes nothing (blocks an erase stroke already removed stay removed).</li>
  * </ul>
@@ -87,14 +81,10 @@ public final class CreateKeyHandler {
 	private @Nullable Waypoint waypoint;
 	/** EXTEND_OR_REMOVE / EXTEND / ERASE: the pressed block (removed by a tap or when the erase mode starts). */
 	private @Nullable BlockPos startBlock;
-	/** ERASE: the waypoint's blocks from before the stroke (the undo of a deletion by the stroke restores them). */
-	private @Nullable List<BlockPos> strokeBlocks;
 	/** Blocks the current hold added. */
 	private int added;
 	/** Blocks the current ERASE hold removed. */
 	private int erased;
-	/** The hold ran into the block limit (shown once). */
-	private boolean limitReached;
 	/** An erase stroke deleted its waypoint: the hold is over, but the key is still down; ignore it until released. */
 	private boolean awaitKeyUp;
 
@@ -113,7 +103,7 @@ public final class CreateKeyHandler {
 			if (!inGame || !client.isWindowActive()) {
 				cancel(); // a screen opened, the world went away or the window lost focus: not a deliberate tap
 			} else if (down) {
-				extend(client, findTarget(client, lookedAt, false));
+				extend(client, findTarget(client, lookedAt));
 			} else {
 				release(client);
 			}
@@ -121,7 +111,7 @@ public final class CreateKeyHandler {
 		}
 		if (clicked && inGame) {
 			boolean look = WaypyClient.lookModifierKey.isDown();
-			press(client, findTarget(client, look, true), look);
+			press(client, findTarget(client, look), look);
 			if (!down) release(client); // tapped within one tick
 		}
 	}
@@ -179,7 +169,6 @@ public final class CreateKeyHandler {
 		}
 		Waypoint restored = manager.undoAt(target, client.level.dimension());
 		if (restored != null) {
-			client.player.sendOverlayMessage(Component.translatable("waypy.message.restored", restored.name));
 			start(Hold.RESTORED, restored);
 			return restored;
 		}
@@ -202,41 +191,34 @@ public final class CreateKeyHandler {
 		if (w == null || target == null || client.level == null) return;
 		if (!w.dimension.equals(client.level.dimension())) return;
 		switch (hold) {
-			case EXTEND_OR_REMOVE -> decide(client, w, target);
+			case EXTEND_OR_REMOVE -> decide(w, target);
 			case ERASE -> {
-				if (w.contains(target)) erase(client, w, target);
+				if (w.contains(target)) erase(w, target);
 			}
-			case CREATED, RESTORED, EXTEND -> add(client, w, target);
+			case CREATED, RESTORED, EXTEND -> add(w, target);
 			default -> {
 			}
 		}
 	}
 
 	/** EXTEND_OR_REMOVE: the first target that is neither the start block nor another waypoint's block picks the mode. */
-	private void decide(Minecraft client, Waypoint w, BlockPos target) {
+	private void decide(Waypoint w, BlockPos target) {
 		if (target.equals(startBlock)) return;
 		if (w.contains(target)) {
 			hold = Hold.ERASE;
-			strokeBlocks = List.copyOf(w.blocks());
 			BlockPos start = startBlock;
-			if (start != null && w.contains(start)) erase(client, w, start);
-			if (hold == Hold.ERASE && waypoint == w && w.contains(target)) erase(client, w, target);
+			if (start != null && w.contains(start)) erase(w, start);
+			if (hold == Hold.ERASE && waypoint == w && w.contains(target)) erase(w, target);
 		} else if (WaypointManager.get().waypointAt(target, w.dimension) == null) {
 			hold = Hold.EXTEND;
-			add(client, w, target);
+			add(w, target);
 		}
 		// Else a block of another waypoint: ignored, the hold stays undecided.
 	}
 
-	private void add(Minecraft client, Waypoint w, BlockPos target) {
+	private void add(Waypoint w, BlockPos target) {
 		switch (WaypointManager.get().addBlock(w, target)) {
 			case ADDED -> added++;
-			case LIMIT_REACHED -> {
-				if (!limitReached && client.player != null) {
-					client.player.sendOverlayMessage(Component.translatable("waypy.message.clump_limit", Waypoint.MAX_BLOCKS));
-				}
-				limitReached = true;
-			}
 			case UNKNOWN_WAYPOINT -> waypoint = null; // removed meanwhile
 			default -> {
 			}
@@ -244,26 +226,15 @@ public final class CreateKeyHandler {
 	}
 
 	/**
-	 * ERASE: removes {@code pos} from W (final). W's last block deletes W instead (undoable, with the blocks from
-	 * before the stroke) and ends the hold; the key is then ignored until it is released.
+	 * ERASE: removes {@code pos} from W (final). W's last block deletes W instead (undoable, as W was before its
+	 * removal session) and ends the hold; the key is then ignored until it is released.
 	 */
-	private void erase(Minecraft client, Waypoint w, BlockPos pos) {
+	private void erase(Waypoint w, BlockPos pos) {
 		WaypointManager manager = WaypointManager.get();
 		switch (manager.removeBlock(w, pos)) {
-			case REMOVED -> {
-				erased++;
-				if (client.player != null) {
-					client.player.sendOverlayMessage(erased == 1
-							? Component.translatable("waypy.message.erasing.one", w.name)
-							: Component.translatable("waypy.message.erasing", w.name, erased));
-				}
-			}
+			case REMOVED -> erased++;
 			case LAST_BLOCK -> {
-				manager.remove(w.id, strokeBlocks);
-				if (client.player != null) {
-					client.player.sendOverlayMessage(Component.translatable("waypy.message.removed", w.name,
-							WaypyClient.createKey.getTranslatedKeyMessage()));
-				}
+				manager.remove(w.id);
 				reset();
 				awaitKeyUp = true;
 			}
@@ -275,23 +246,15 @@ public final class CreateKeyHandler {
 
 	/**
 	 * Key-up: ends the hold. An EXTEND_OR_REMOVE hold that is still undecided (a tap) removes its start block from the
-	 * waypoint (final), or deletes the waypoint if that was its only block (undoable). An ERASE hold reports how many
-	 * blocks it removed. Also ends the wait after an erase stroke deleted its waypoint. No-op when not holding.
+	 * waypoint (final), or deletes the waypoint if that was its only block (undoable). Also ends the wait after an
+	 * erase stroke deleted its waypoint. No-op when not holding.
 	 */
 	public void release(Minecraft client) {
 		Hold kind = hold;
 		Waypoint w = waypoint;
 		BlockPos start = startBlock;
-		int removed = erased;
 		cancel();
-		if (w == null) return;
-		if (kind == Hold.EXTEND_OR_REMOVE && start != null) {
-			tap(client, w, start);
-		} else if (kind == Hold.ERASE && removed > 0 && client.player != null && WaypointManager.get().byId(w.id).isPresent()) {
-			client.player.sendOverlayMessage(removed == 1
-					? Component.translatable("waypy.message.erased.one", w.name, w.size())
-					: Component.translatable("waypy.message.erased", removed, w.name, w.size()));
-		}
+		if (w != null && kind == Hold.EXTEND_OR_REMOVE && start != null) tap(w, start);
 	}
 
 	/** Ends the hold without acting on it (screen opened, focus lost, world gone). No-op when not holding. */
@@ -304,30 +267,22 @@ public final class CreateKeyHandler {
 		hold = Hold.IDLE;
 		waypoint = null;
 		startBlock = null;
-		strokeBlocks = null;
 		added = 0;
 		erased = 0;
-		limitReached = false;
 	}
 
-	private static void tap(Minecraft client, Waypoint w, BlockPos start) {
+	private static void tap(Waypoint w, BlockPos start) {
 		WaypointManager manager = WaypointManager.get();
 		if (manager.byId(w.id).isEmpty() || !w.contains(start)) return; // changed meanwhile
-		Component message;
 		if (w.isClump()) {
-			if (manager.removeBlock(w, start) != WaypointManager.RemoveBlockResult.REMOVED) return;
-			message = w.size() == 1
-					? Component.translatable("waypy.message.block_removed.one", w.name)
-					: Component.translatable("waypy.message.block_removed", w.name, w.size());
+			manager.removeBlock(w, start);
 		} else {
 			manager.remove(w.id);
-			message = Component.translatable("waypy.message.removed", w.name, WaypyClient.createKey.getTranslatedKeyMessage());
 		}
-		if (client.player != null) client.player.sendOverlayMessage(message);
 	}
 
-	private static @Nullable BlockPos findTarget(Minecraft client, boolean lookedAt, boolean report) {
+	private static @Nullable BlockPos findTarget(Minecraft client, boolean lookedAt) {
 		if (client.player == null || client.level == null) return null;
-		return lookedAt ? WaypyClient.findLookedAtBlock(client, report) : WaypyClient.findBlockBelow(client, report);
+		return lookedAt ? WaypyClient.findLookedAtBlock(client) : WaypyClient.findBlockBelow(client);
 	}
 }
