@@ -65,7 +65,11 @@ import net.minecraft.world.level.storage.LevelResource;
  * immediately, but stays restorable for {@link #UNDO_WINDOW_MILLIS} (real time) in one small "recently deleted" stack
  * of {@link DeletedWaypoint}s, newest first ({@link #undoAt}, {@link #undo}, {@link #restore}). Pending deletions are
  * never saved (the file is written without them) and become permanent when they expire, on disconnect and on world
- * change. Removing single blocks from a clump ({@link #removeBlock}) is final and has no undo.
+ * change. Removing single blocks from a clump ({@link #removeBlock}) is final and has no undo of its own, but the
+ * manager remembers, per waypoint, its blocks from before the current <b>removal session</b> (a run of block removals
+ * with less than {@link #UNDO_WINDOW_MILLIS} between them, ended by an add or a move): if the waypoint is deleted
+ * during the session, the deletion's undo brings back those blocks, so a clump tapped or erased down to nothing comes
+ * back whole.
  *
  * <p><b>Groups:</b> {@link WaypointGroup}s of 2+ waypoints of one dimension ({@link #createGroup},
  * {@link #removeFromGroup}, {@link #ungroup}). A waypoint is in at most one group. Deleting a member removes it from
@@ -105,6 +109,8 @@ public final class WaypointManager {
 	private final Map<ResourceKey<Level>, Map<BlockPos, Waypoint>> blockIndex = new HashMap<>();
 	/** Recently deleted waypoints, newest first; each restorable until {@link #UNDO_WINDOW_MILLIS} after the deletion. */
 	private final Deque<DeletedWaypoint> recentlyDeleted = new ArrayDeque<>();
+	/** Waypoint id -> its current removal session (see the class comment); dropped on add, move, delete and expiry. */
+	private final Map<UUID, RemovalSession> removalSessions = new HashMap<>();
 	private final LongSupplier clock = Util::getMillis;
 	private @Nullable UUID selectedId;
 	private @Nullable String worldKey;
@@ -244,18 +250,12 @@ public final class WaypointManager {
 
 	/**
 	 * Removes the waypoint from the world, the list and the index. It stays restorable ({@link #restore},
-	 * {@link #undoAt}, {@link #undo}) for {@link #UNDO_WINDOW_MILLIS}.
+	 * {@link #undoAt}, {@link #undo}) for {@link #UNDO_WINDOW_MILLIS}. If it is in a removal session (blocks removed
+	 * one by one by N taps or an erase stroke, the last one less than {@link #UNDO_WINDOW_MILLIS} ago), the undo brings
+	 * it back with its blocks from before that session, in their old order; freed blocks that another waypoint has
+	 * claimed since are left out.
 	 */
 	public synchronized void remove(UUID id) {
-		remove(id, null);
-	}
-
-	/**
-	 * Like {@link #remove(UUID)}, but the undo brings the waypoint back with {@code undoBlocks} (in that order) instead
-	 * of its current blocks. The N key's erase stroke uses it when it erases a waypoint's last block, so the undo
-	 * restores the waypoint as it was before the stroke began. Null (or empty) keeps the current blocks.
-	 */
-	public synchronized void remove(UUID id, @Nullable List<BlockPos> undoBlocks) {
 		Optional<Waypoint> removed = byId(id);
 		if (removed.isEmpty()) return;
 		Waypoint w = removed.get();
@@ -268,7 +268,9 @@ public final class WaypointManager {
 		WaypointGroup group = groupByMember.get(id);
 		int groupIndex = group != null ? leaveGroup(group, id) : -1;
 		// Out of the list and the index now, so its blocks can be reset without touching either.
-		if (undoBlocks != null && !undoBlocks.isEmpty()) w.setBlocksInternal(undoBlocks);
+		List<BlockPos> undoBlocks = sessionBlocks(w);
+		removalSessions.remove(id);
+		if (undoBlocks != null) w.setBlocksInternal(undoBlocks);
 		pushUndo(new DeletedWaypoint(w, listIndex, wasSelected, group != null ? group.id : null, groupIndex, clock.getAsLong()));
 		markDirty();
 	}
@@ -294,10 +296,49 @@ public final class WaypointManager {
 		if (!waypoints.contains(waypoint)) return RemoveBlockResult.UNKNOWN_WAYPOINT;
 		if (!waypoint.contains(pos)) return RemoveBlockResult.NOT_IN_WAYPOINT;
 		if (!waypoint.isClump()) return RemoveBlockResult.LAST_BLOCK;
+		List<BlockPos> before = List.copyOf(waypoint.blocks());
 		if (waypoint.removeBlockInternal(pos) < 0) return RemoveBlockResult.NOT_IN_WAYPOINT;
+		// The first removal of a session snapshots the blocks; later ones only extend the session.
+		RemovalSession session = activeSession(waypoint.id);
+		removalSessions.put(waypoint.id, new RemovalSession(session != null ? session.blocksBefore() : before, clock.getAsLong()));
 		reindex(waypoint.dimension); // another waypoint may share the block (old files, "+ New here")
 		markDirty();
 		return RemoveBlockResult.REMOVED;
+	}
+
+	/**
+	 * A waypoint's run of block removals: its blocks from before the first one, and when the latest one happened. Ends
+	 * {@link #UNDO_WINDOW_MILLIS} after the latest removal, when a block is added or the waypoint is moved, and when the
+	 * waypoint is deleted (the deletion's undo then restores {@code blocksBefore}).
+	 */
+	private record RemovalSession(List<BlockPos> blocksBefore, long lastMillis) {
+	}
+
+	/** The waypoint's removal session if it has not expired (an expired one is dropped), else null. */
+	private @Nullable RemovalSession activeSession(UUID id) {
+		RemovalSession session = removalSessions.get(id);
+		if (session != null && clock.getAsLong() - session.lastMillis() >= UNDO_WINDOW_MILLIS) {
+			removalSessions.remove(id);
+			return null;
+		}
+		return session;
+	}
+
+	/**
+	 * The blocks a deletion's undo should restore for {@code w} (already out of the list and index): the blocks from
+	 * before its active removal session, minus freed blocks another waypoint has claimed since; null to keep its
+	 * current blocks (no session).
+	 */
+	private @Nullable List<BlockPos> sessionBlocks(Waypoint w) {
+		RemovalSession session = activeSession(w.id);
+		if (session == null) return null;
+		Map<BlockPos, Waypoint> index = blockIndex.getOrDefault(w.dimension, Map.of());
+		List<BlockPos> out = new ArrayList<>(session.blocksBefore().size());
+		for (BlockPos pos : session.blocksBefore()) {
+			if (w.contains(pos) || !index.containsKey(pos)) out.add(pos);
+		}
+		// Only removals happen during a session, so the current blocks are all in the snapshot; if not, keep them.
+		return out.containsAll(w.blocks()) ? out : null;
 	}
 
 	// ---------------------------------------------------------------- undo
@@ -305,7 +346,8 @@ public final class WaypointManager {
 	/**
 	 * A deleted waypoint that can still be restored (kept in the "recently deleted" stack, newest first, for
 	 * {@link #UNDO_WINDOW_MILLIS}): the waypoint itself (id, fields and blocks unchanged), and the group it was in
-	 * ({@code groupId}, null if none) with its index there. {@code atMillis} is when it was deleted
+	 * ({@code groupId}, null if none) with its index there. If it was deleted during a removal session, its blocks were
+	 * already reset to the ones from before the session. {@code atMillis} is when it was deleted
 	 * ({@code Util.getMillis()}).
 	 */
 	public record DeletedWaypoint(Waypoint waypoint, int listIndex, boolean wasSelected, @Nullable UUID groupId, int groupIndex,
@@ -398,16 +440,18 @@ public final class WaypointManager {
 	}
 
 	/**
-	 * Makes deletions permanent: the expired ones, or with {@code all} every pending one (world change, disconnect;
-	 * the devtest uses it to force expiry).
+	 * Makes deletions permanent and ends removal sessions: the expired ones, or with {@code all} every pending one
+	 * (world change, disconnect; the devtest uses it to force expiry).
 	 */
 	public synchronized void expireDeletions(boolean all) {
 		if (all) {
 			recentlyDeleted.clear();
+			removalSessions.clear();
 			return;
 		}
 		long now = clock.getAsLong();
 		recentlyDeleted.removeIf(e -> now - e.atMillis() >= UNDO_WINDOW_MILLIS);
+		removalSessions.values().removeIf(s -> now - s.lastMillis() >= UNDO_WINDOW_MILLIS);
 	}
 
 	// ---------------------------------------------------------------- groups: mutations
@@ -528,6 +572,7 @@ public final class WaypointManager {
 		Waypoint blocker = moveBlocker(waypoint, dx, dy, dz);
 		if (blocker != null) return new MoveResult(MoveResult.Status.OVERLAP, blocker);
 		waypoint.translateInternal(dx, dy, dz);
+		removalSessions.remove(waypoint.id); // the snapshot's positions are stale now
 		reindex(waypoint.dimension);
 		markDirty();
 		return new MoveResult(MoveResult.Status.MOVED, null);
@@ -570,6 +615,7 @@ public final class WaypointManager {
 		if (waypoint.size() >= Waypoint.MAX_BLOCKS) return AddBlockResult.LIMIT_REACHED;
 		if (!waypoint.addBlockInternal(pos)) return AddBlockResult.LIMIT_REACHED;
 		index.put(pos.immutable(), waypoint);
+		removalSessions.remove(waypoint.id); // an add ends the removal session
 		// A clump is never a beacon: it becomes Block Selection the moment it grows to two blocks.
 		if (waypoint.style == WaypointStyle.BEACON) waypoint.style = WaypointStyle.BLOCK_HIGHLIGHT;
 		markDirty();
@@ -632,6 +678,7 @@ public final class WaypointManager {
 
 	private void clear() {
 		recentlyDeleted.clear(); // pending deletions become permanent
+		removalSessions.clear();
 		waypoints.clear();
 		groups.clear();
 		groupByMember.clear();

@@ -26,11 +26,11 @@ Put the jar in your `.minecraft/mods` folder.
 | `M` | Open the Waypy menu |
 | `H` | Open the Presets popup for the waypoint you stand on: press a number key to apply a preset to it (see [Presets](#presets)) |
 | `Left Shift` + `H` | The same for the waypoint you look at. With no waypoint there, nothing happens |
-| `Y` | Hide or show all waypoints at once (beams, highlights and pins, groups included). The action bar says which, and the setting is remembered after a restart. `N` and the menu still work while everything is hidden |
+| `Y` | Hide or show all waypoints at once (beams, highlights and pins, groups included). The setting is remembered after a restart. `N` and the menu still work while everything is hidden |
 
 A clump is one waypoint made of several blocks. It is always drawn as Block Selection (one merged shape), with the logo floating above its centre. Tapping `N` on one of its blocks removes just that block; if it was the first block, the next one takes over the position. Parts that end up apart stay one waypoint. A clump that is down to one block can be a Beacon again.
 
-Creating and extending are silent. Removing blocks from a clump is final: it shows `Block removed from "<name>" (<n> blocks left)`, or while erasing `Erasing "<name>": 5 blocks removed` and then `Removed 5 blocks from "<name>" (7 left)`, and there is no undo; the freed block is plain ground again. Deleting a whole waypoint (a tap on a single block, erasing a clump's last block, or the menu's Delete) shows `Waypoint "<name>" removed – press N to undo`, and you have 15 seconds to undo it. A clump erased away completely comes back with all the blocks it had before you started erasing. Nothing comes back if another waypoint has taken one of its blocks in the meantime, and leaving the world makes deletions final.
+Everything the keys do is silent: Waypy shows no messages on screen. Removing a block from a clump that still has other blocks is final on its own; the freed block is plain ground again. Deleting a whole waypoint (a tap on a single block, tapping or erasing a clump's last block, or the menu's Delete) can be undone for 15 seconds, and a clump comes back whole: with every block it had before you started removing blocks from it (removals more than 15 seconds apart, or with an extend or a move in between, count as a fresh start). Press `N` on any of its old blocks, or use the menu's Undo. Nothing comes back if another waypoint has taken one of its blocks in the meantime, and leaving the world makes deletions final.
 
 All five keys can be rebound under Options → Controls → Key Binds → Waypy: "Create/Delete Waypoint" (`N`), "Look-at Modifier" (`Left Shift`; sharing it with Sneak works), "Open Waypoint Menu" (`M`), "Open Presets" (`H`) and "Hide/Show All Waypoints" (`Y`). Vanilla only uses `H` together with `F3` (F3+H, advanced tooltips), so the two don't clash.
 
@@ -46,7 +46,7 @@ The menu lists the waypoints of the current world on the left and edits the sele
 - for Block Selection, an opacity slider and a "Render through blocks" option (off by default)
 - a Visible toggle (hidden waypoints are greyed in the list)
 
-**Delete** removes the selected waypoint right away (it is greyed out while a group or several waypoints are selected); an **Undo** button appears next to it for 15 seconds. Undo brings back the last deleted waypoint (deleted here or with `N`). Blocks removed from a clump can't be undone.
+**Delete** removes the selected waypoint right away (it is greyed out while a group or several waypoints are selected); an **Undo** button appears next to it for 15 seconds. Undo brings back the last deleted waypoint (deleted here or with `N`). Blocks removed from a clump that still exists can't be undone; a deleted clump comes back with the blocks it had before you started removing them.
 
 Clumps show their block count in the list and in the editor.
 
