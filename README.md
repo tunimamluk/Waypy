@@ -26,13 +26,14 @@ Put the jar in your `.minecraft/mods` folder.
 | `M` | Open the Waypy menu |
 | `H` | Open the Presets popup for the waypoint you stand on: press a number key to apply a preset to it (see [Presets](#presets)) |
 | `Left Shift` + `H` | The same for the waypoint you look at. With no waypoint there, nothing happens |
+| "Open Layouts" (unbound) | The same popup, opened on its Layouts tab (see [Layout presets](#layout-presets)). Bind it in Key Binds if you want it; `Left Shift` works with it the same way |
 | `Y` | Hide or show all waypoints at once (beams, highlights and pins, groups included). The setting is remembered after a restart. `N` and the menu still work while everything is hidden |
 
 A clump is one waypoint made of several blocks. It is always drawn as Block Selection (one merged shape), with the logo floating above its centre. Tapping `N` on one of its blocks removes just that block; if it was the first block, the next one takes over the position. Parts that end up apart stay one waypoint. A clump that is down to one block can be a Beacon again.
 
 Everything the keys do is silent: Waypy shows no messages on screen. Removing a block from a clump that still has other blocks is final on its own; the freed block is plain ground again. Deleting a whole waypoint (a tap on a single block, tapping or erasing a clump's last block, or the menu's Delete) can be undone for 15 seconds, and a clump comes back whole: with every block it had before you started removing blocks from it (removals more than 15 seconds apart, or with an extend or a move in between, count as a fresh start). Press `N` on any of its old blocks, or use the menu's Undo. Nothing comes back if another waypoint has taken one of its blocks in the meantime, and leaving the world makes deletions final.
 
-All five keys can be rebound under Options → Controls → Key Binds → Waypy: "Create/Delete Waypoint" (`N`), "Look-at Modifier" (`Left Shift`; sharing it with Sneak works), "Open Waypoint Menu" (`M`), "Open Presets" (`H`) and "Hide/Show All Waypoints" (`Y`). Vanilla only uses `H` together with `F3` (F3+H, advanced tooltips), so the two don't clash.
+All six keys can be rebound under Options → Controls → Key Binds → Waypy: "Create/Delete Waypoint" (`N`), "Look-at Modifier" (`Left Shift`; sharing it with Sneak works), "Open Waypoint Menu" (`M`), "Open Presets" (`H`), "Open Layouts" (not bound by default) and "Hide/Show All Waypoints" (`Y`). Vanilla only uses `H` together with `F3` (F3+H, advanced tooltips), so the two don't clash.
 
 ## Menu
 
@@ -58,6 +59,7 @@ A group bundles nearby waypoints (2 or more, in the same dimension) so that from
 - The list shows each group as a row ("Mine Area · 3 waypoints") with its waypoints indented under it. Click the group row to edit the group: name, color, logo (a block, or None for the name's initial), **Visible**, Text and **Ungroup** (the waypoints stay, just ungrouped).
 - **Visible: OFF** on a group hides the whole group: its waypoints and its group pin. The waypoints keep their own Visible setting, so turning the group back on shows exactly what was shown before. In the list a hidden group and its waypoints are greyed, and a waypoint hidden only by its group says "group hidden".
 - A group member's editor shows "Group: <name>" and a **Remove from group** button. A waypoint is in at most one group; making a new group with it moves it out of its old one.
+- **Right-click a group row** for a small menu with **Create layout preset**: it saves the group's arrangement as a layout at once, with the block you stand on as its anchor (see [Layout presets](#layout-presets)).
 - A group needs at least 2 waypoints: when removing or deleting leaves only one, the group goes away by itself. A member that only loses blocks stays in its group. Undoing the deletion of a member puts it back into its group if the group still exists.
 - **In the world:** while you are farther than the combine distance (15 blocks by default) from the middle of the group, its waypoints are replaced by one pin in the group's color, with the label "Name (3) (124m)" when its Text is on; their highlights and beams are hidden too. Come closer and the waypoints show again. The pins crossfade, and there is a 1-block margin so standing right at the edge doesn't flicker. Hidden waypoints don't count; a group with fewer than 2 visible waypoints always shows its waypoints.
 
@@ -79,6 +81,19 @@ Stand on a waypoint and press `H`, or hold `Left Shift` and look at one while pr
 
 Presets are saved in `<.minecraft>/config/waypy-presets.json` right after every change.
 
+The popup has two tabs at the top, **Presets** and **Layouts** (`Ctrl`+`Tab` switches). `H` opens the Presets tab unless the "H Opens" setting says Layouts.
+
+## Layout presets
+
+A layout preset is a saved copy of a whole group: every waypoint in it (all its blocks, its name and look, Visible and Text) and the group's own name, color, logo, Text and Visible. Layouts are shared by all your worlds.
+
+- **Create one**: stand on a block (for example the first block of a clump in the group), open the menu (`M`), right-click the group's row and choose **Create layout preset**. The block you stand on becomes the layout's **anchor**: every block is stored as an offset from it. The layout is named after the group and saved right away.
+- **Place one**: stand on a waypoint and press `H` (or look at one with `Left Shift` + `H`), open the **Layouts** tab and pick a layout (click it or press its number). The layout is placed so that its anchor lands on the exact block you stood on (or looked at), without rotating it. The waypoint you targeted joins it: if the layout's anchor was on one of its waypoints, your waypoint takes that waypoint's look (keeping its own name) and gets its blocks; the other waypoints are created with their saved names and looks. Blocks that already belong to another waypoint are skipped (a waypoint with no free block left is not created). If at least two waypoints result, they become a new group with the layout's group settings; your waypoint leaves its old group. Nothing is shown on screen.
+- **Search and number keys** work in the Layouts tab just as for presets. Each button shows the layout's name, the group's logo and color, and the number of waypoints.
+- **Rename or delete**: right-click a layout. The **+** button is greyed out on this tab: layouts are made from the menu.
+
+Layouts are saved in `<.minecraft>/config/waypy-layouts.json` right after every change.
+
 ## Settings
 
 Open them with the **Settings...** button at the top right of the menu. They apply to all worlds.
@@ -92,6 +107,7 @@ Open them with the **Settings...** button at the top right of the menu. They app
 | Distance in Label | ON | Show the distance after the name. |
 | Group Combine Distance | 15 blocks | The distance at which groups combine into one pin, the same for all groups (5–200 blocks). |
 | Show Waypoints | ON | OFF hides everything Waypy draws, the same as pressing `Y`. |
+| H Opens | Presets | The tab `H` opens the popup on: Presets or Layouts. ("Open Layouts" always opens Layouts.) |
 
 Settings are saved in `<.minecraft>/config/waypy.json`.
 

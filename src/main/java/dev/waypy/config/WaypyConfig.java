@@ -91,6 +91,8 @@ public final class WaypyConfig {
 	 * survives restarts. The N key and the menu keep working.
 	 */
 	public boolean hideAll = false;
+	/** The tab the Open Presets key (H) opens the popup on ("H Opens"). The Open Layouts key always opens Layouts. */
+	public PopupTab hOpens = PopupTab.PRESETS;
 
 	// ---------------------------------------------------------------- access
 
@@ -111,6 +113,7 @@ public final class WaypyConfig {
 		showDistance = other.showDistance;
 		groupCombineDistance = other.groupCombineDistance;
 		hideAll = other.hideAll;
+		hOpens = other.hOpens;
 		sanitize();
 	}
 
@@ -164,6 +167,7 @@ public final class WaypyConfig {
 		waypointRenderDistance = snapRenderDistance(waypointRenderDistance);
 		iconSize = snapPercent(iconSize, MIN_ICON_SIZE, MAX_ICON_SIZE);
 		if (labels == null) labels = LabelMode.ALWAYS;
+		if (hOpens == null) hOpens = PopupTab.PRESETS;
 		groupCombineDistance = snapCombineDistance(groupCombineDistance);
 	}
 

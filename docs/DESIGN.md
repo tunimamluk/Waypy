@@ -7,7 +7,7 @@ Client-side Fabric waypoint mod for Minecraft **26.2** (Java 25, Mojang names �
 
 ## User-facing behaviour
 
-All five keys are vanilla `KeyMapping`s in the "Waypy" category, so they are listed and rebindable in Options → Controls → Key Binds:
+All six keys are vanilla `KeyMapping`s in the "Waypy" category, so they are listed and rebindable in Options → Controls → Key Binds:
 
 | Key mapping | Name in Key Binds | Default |
 |---|---|---|
@@ -16,6 +16,7 @@ All five keys are vanilla `KeyMapping`s in the "Waypy" category, so they are lis
 | `key.waypy.menu` | Open Waypoint Menu | `M` |
 | `key.waypy.toggle_all` | Hide/Show All Waypoints | `Y` |
 | `key.waypy.presets` | Open Presets | `H` |
+| `key.waypy.layouts` | Open Layouts | unbound (`InputConstants.UNKNOWN`) |
 
 | Key | Action |
 |---|---|
@@ -24,8 +25,9 @@ All five keys are vanilla `KeyMapping`s in the "Waypy" category, so they are lis
 | `N` released | **Tap** (an extend-or-erase hold still undecided): if W has more than one block, only the pressed block is removed from W, final; if it was W's only block, the whole waypoint is deleted (undoable for 15 s; a clump tapped down to nothing comes back whole, see **Undo**). Every other release changes nothing: an extend keeps everything, the start block included, and a press that restored a waypoint never removes anything. |
 | Look-at Modifier + `N` | Same as `N`, but the block comes from a raycast from the camera (max 512 blocks, ignores fluids). On a miss, the press does nothing. Held, the crosshair sweep is the target: it decides EXTEND or ERASE the same way, then paints (extends) or erases. |
 | `M` | Open the Waypy menu with the **selected** waypoint pre-selected. |
-| `H` | In game (no screen open): open the **Presets** popup (see Presets) for the waypoint you **stand on**. Vanilla 26.2's only default on `H` is the debug combo `F3`+`H` (`key.debug.showAdvancedTooltips`, category Debug); vanilla runs debug keys only while `F3` is held and then sends the plain key nowhere, and the Key Binds screen flags no conflict between two default bindings, so the two never clash. |
+| `H` | In game (no screen open): open the **Presets** popup (see Presets) for the waypoint you **stand on**, on the tab the **H Opens** setting names (Presets by default). Vanilla 26.2's only default on `H` is the debug combo `F3`+`H` (`key.debug.showAdvancedTooltips`, category Debug); vanilla runs debug keys only while `F3` is held and then sends the plain key nowhere, and the Key Binds screen flags no conflict between two default bindings, so the two never clash. |
 | Look-at Modifier + `H` | Same, for the waypoint you **look at** (the 512-block raycast of Look-at Modifier + `N`). With no such waypoint the popup does not open; nothing happens (no message). |
+| Open Layouts (unbound by default) | In game (no screen open): the same popup with the same targeting (plain = the waypoint stood on, Look-at Modifier held at the press = the one looked at; no target = nothing happens), always on the **Layouts** tab (`WaypyClient.openLayouts`). |
 | `Y` | In game (no screen open): toggle **hide all** (`WaypyConfig.hideAll`), saved to the config at once so it survives restarts (`WaypyClient.toggleHideAll`). While it is on, NOTHING of Waypy renders (beams, highlights, pins, tags, group pins); `N`, `M` and the menu keep working. Vanilla 26.2 binds nothing to `Y` by default. |
 
 The look-at modifier defaults to Left Shift, the same key as Sneak. That works because vanilla 26.2 keeps every mapping of a key (`KeyMapping.MAP` is `Key → List<KeyMapping>`) and sets all of them down/up, so both report `isDown()`.
@@ -51,7 +53,7 @@ N key state machine (`dev.waypy.CreateKeyHandler`, run at the end of every clien
 
 New waypoint defaults: name `Waypoint <n>` (n = next free number), color cycles through a palette of vanilla dye colors, style `BLOCK_HIGHLIGHT`, logo `BLOCK` using the item of the block the waypoint is on (the first block of a clump; `minecraft:compass` only for blocks without an item, e.g. fire), opacity 0.4, throughBlocks **false**, visible true, showText **false** (logo only). The N key and the menu's "+ New here" share this code (`WaypyClient.createWaypointAt`). "+ New here" always creates (it does not toggle or restore). Creating a waypoint shows no message.
 
-**No action messages.** Waypy never writes to the action bar (or chat): creating, extending, removing blocks, erasing, deleting, restoring, hitting the 256-block limit, finding no block, and the `Y` toggle all happen silently. The only text is the menu's own UI (labels, tooltips, the menu's "All waypoints are hidden" notice). The devtest asserts that the HUD overlay message stays empty through every N action and the `Y` toggle.
+**No action messages.** Waypy never writes to the action bar (or chat): creating, extending, removing blocks, erasing, deleting, restoring, hitting the 256-block limit, finding no block, the `Y` toggle, applying a preset, creating a layout preset and applying one all happen silently. The only text is the menu's own UI (labels, tooltips, the menu's "All waypoints are hidden" notice). The devtest asserts that the HUD overlay message stays empty through every N action and the `Y` toggle.
 
 ## Data model (`dev.waypy.waypoint`)
 
@@ -169,6 +171,7 @@ Use only vanilla widgets and textures: `Button`, `EditBox`, `AbstractSliderButto
   - If Block Selection is the style: an Opacity slider (0–100%) and a "Render through blocks" `Checkbox`.
   - For a group member: a grey `Group: <name>` line with a **Remove from group** button beside it (in the right column; under it when narrow). Removing the second-to-last member dissolves the group.
   - For clumps, a grey info line `Clump: <n> blocks` at the end (no per-block editing).
+- **Group context menu**: right-clicking a group row selects the group and opens a small menu next to the cursor (kept on screen): vanilla's tooltip panel (`TooltipRenderUtil.extractTooltipBackground`) holding the group's name in grey and one vanilla button, **Create layout preset** (see Layout presets). It is drawn in its own GUI stratum on top of everything; while the mouse is over it nothing under it is hovered. A left click on the button runs it; any other click, or `Esc`, just closes the menu (a right-click on another group row reopens it there). The item is inactive, with the reason as its tooltip, when the player is in another dimension than the group or over no block at all. Every rebuild of the screen closes the menu.
 - Header: a `Settings...` button (70–90 px wide, 20 px high) level with the title, right-aligned to the editor column's right edge; it moves right / narrows so it never overlaps the title on small screens.
 - Footer: `Done` (200 px).
 - Changes apply live and save when the screen closes.
@@ -201,8 +204,8 @@ public final class Preset {      // dev.waypy.preset.Preset
 
 **Target.** `WaypyClient.openPresets(client, lookMode)` (called by the `H` handler with `lookModifierKey.isDown()` read at the press, exactly as `CreateKeyHandler` does for `N`) finds the target with `findTargetWaypoint(client, lookMode)`: **plain `H`** → only the waypoint whose block the player **stands on** (the `N` key's `findBlockBelow`); **Look-at Modifier + `H`** → only the waypoint whose block is **under the crosshair** (`findLookedAtBlock`, up to 512 blocks). Each is looked up with `WaypointManager.waypointAt` in the current dimension; there is no fallback from one mode to the other, and the lookup is silent. **With no target the popup does not open**: nothing happens, silently (no message), and `openPresets` returns false. So the popup always has a target, fixed when it opens.
 
-**`PresetScreen`** (the popup `H` opens), modelled on vanilla's Game Menu (`PauseScreen`): no panel, a centred column of standard vanilla widgets 204 px wide (20 px high, 4 px apart) over vanilla's blurred, dimmed in-game background. There is no "Back to Game" button: `Esc` closes. The column sits a quarter of the way down the free space (its top at most 40 px, like the Game Menu's title), measured with all presets so filtering never moves it.
-- Top row: the title "Presets", centred, and a small vanilla `+` button (20×20) at the column's right edge (tooltip `New preset from "<waypoint>"`).
+**`PresetScreen`** (the popup `H` opens), modelled on vanilla's Game Menu (`PauseScreen`): no panel, a centred column of standard vanilla widgets 204 px wide (20 px high, 4 px apart) over vanilla's blurred, dimmed in-game background. There is no "Back to Game" button: `Esc` closes. The column sits a quarter of the way down the free space (its top at most 40 px, like the Game Menu's title), measured with all presets or all layouts, whichever list is longer, so neither filtering nor switching tabs moves it.
+- Top row: two tab buttons, **Presets | Layouts** (vanilla buttons sharing the width left of the `+`; the selected one keeps vanilla's hovered sprite with a white underline under its label, the other has a grey label), and a small vanilla `+` button (20×20) at the column's right edge (tooltip `New preset from "<waypoint>"`). Clicking a tab, or `Ctrl`+`Tab`, switches; switching clears and unfocuses the search. The popup opens on the tab given by the key (`H`: the **H Opens** setting; Open Layouts: Layouts). The Layouts tab is described under Layout presets; everything below is the Presets tab.
 - A grey `Applies to: <name>` line (the name in white).
 - A vanilla search `EditBox` (204 px, hint `Search presets...` in vanilla's `SEARCH_HINT_STYLE`).
 - One vanilla button per preset, reading `1  Home` (number, two spaces, name; centred), with the logo's item icon at the left (none for logo `NONE`) and a 6×6 colour swatch in a 1 px black ring at the right. The column scrolls (vanilla `ScrollableLayout` and scrollbar) when the presets don't fit. The tooltip says `Click or press <n> to apply. Right-click to edit`.
@@ -222,6 +225,38 @@ Keys and mouse in the list:
 - **Edit**: the form edits a copy; Save replaces the preset (same number), Delete removes it (the rest renumber). A blank name saves as `Preset <n>`.
 - Save, Cancel and Delete return to the list. `Enter` in the name box saves; `Esc` cancels back to the list.
 
+## Layout presets (`preset.Layout`, `preset.LayoutManager`, the popup's Layouts tab)
+
+A **layout preset** is a saved copy of a group's arrangement, global (all worlds), numbered like presets (position + 1; delete renumbers, rename keeps the number).
+
+```java
+public final class Layout {           // dev.waypy.preset.Layout
+    String name;                      // max 32; defaults to the group name
+    GroupSettings group;              // name, color, logoType, logoBlock, showText, visible
+    List<Member> members;             // the group's waypoints in member order, never empty
+    static final class Member {
+        String name; int color; WaypointStyle style; LogoType logoType; Identifier logoBlock;
+        float highlightOpacity; boolean throughBlocks, showText, visible;
+        List<BlockPos> offsets;       // (dx, dy, dz) from the anchor, 1..256, unique, the waypoint's block order
+    }
+}
+```
+
+**Creating** (`WaypointScreen.createLayoutPreset(group)`, the group context menu's "Create layout preset"): the **anchor** is the block the player stands on when choosing it (`WaypyClient.findBlockBelow`, the `N` key's block: the first non-air block below if airborne). `Layout.capture` stores each member's blocks minus the anchor plus its settings (name, colour, style, logo type and block, opacity, through-blocks, text, visible), and the group's settings; the layout is named after the group, appended (`LayoutManager.add`) and saved at once, silently, with no form. Disabled (inactive item with a tooltip) when the player is in another dimension than the group or over no block.
+
+**Target block.** `WaypyClient.findTarget(client, lookMode)` returns the target waypoint **and** the exact block that found it (`Target(waypoint, block)`): the block stood on for plain `H`, the looked-at block for Look-at Modifier + `H`. The popup stores both when it opens (`PresetScreen.targetBlock()`); for a clump this is whichever of its blocks was found, not its anchor.
+
+**Applying** (`Layout.applyAt(manager, T, B, level)`, from `PresetScreen.applyLayout`): every offset is translated so the layout's anchor lands on `B` (no rotation), in `T`'s dimension.
+1. The **anchor member** (the first member whose offsets contain `(0, 0, 0)`) merges into `T`: each of its translated blocks is added to `T` with `WaypointManager.addBlock` (blocks `T` already has are fine; blocks of other waypoints, blocks outside the level's build height and blocks over the 256-block cap are skipped), then `T` takes every setting of that member **except the name**. Without an anchor member `T` is left as it is.
+2. Every other member is created as a new waypoint (`WaypointManager.create` on its first free translated block, then `addBlock` for the rest) with its saved name and settings. A translated block that belongs to any waypoint (including `T` and waypoints just created) or is outside the build height is skipped; a member left with no free block is not created.
+3. A clump is never a beacon: a member or `T` with 2+ blocks gets `BLOCK_HIGHLIGHT`.
+4. If at least 2 waypoints result, `T` and the new waypoints (in layout order, `T` in the anchor member's place, else first) become a **new group** with `WaypointManager.createGroup` (which moves `T` out of its old group, dissolving that one below 2 members) and the layout's group settings. With only `T`, no group is formed and `T`'s group membership is unchanged.
+5. `markDirty`, the popup closes, no message. `applyAt` returns an `ApplyResult` (created waypoints, merged blocks, skipped blocks, skipped members, the group) used by the devtest.
+
+**Layouts tab** of the popup (same list view as Presets): the grey `Applies to: <name>` line, the search box (hint `Search layouts...`) and one vanilla button per layout reading `1  Base Layout · 3 waypoints` (the count in grey), with the group's logo icon at the left (none for `NONE`) and a swatch of the group colour at the right; tooltip `3 waypoints, 8 blocks. Click or press 1 to place it here. Right-click to rename or delete`. Click or number key 1–9 applies (same key rules as Presets: the number keys only while the search box is not focused, letters start a search, `Enter` applies the first match, `Esc` clears then closes). `+` is shown inactive with the tooltip `Right-click a group in the menu (M) to create a layout`. With no layouts: `No layouts yet – right-click a group in the menu (M) to create one`; with no match: `No matching layouts`. **Right-click** a layout: a small inline form, `Edit Layout <n>` with the grey sub-line `Layouts are shared by all worlds`, a Name box (focused; `Enter` saves) and `Save | Delete | Cancel` in one row; Save renames (blank → `Layout <n>`), Delete removes it (the rest renumber), Cancel or `Esc` returns to the list.
+
+**Storage**: `<gameDir>/config/waypy-layouts.json` (`LayoutManager`, loaded at client init, saved at once after every change), written like the waypoint files (two-space indent, each `[dx, dy, dz]` on one line): `{"version": 1, "layouts": [{"name", "group": {"name", "color": "#RRGGBB", "logoType", "logoBlock", "showText", "visible"}, "members": [{"name", "color", "style", "logoType", "logoBlock", "highlightOpacity", "throughBlocks", "showText", "visible", "blocks": [[dx, dy, dz], ...]}, ...]}, ...]}`. A missing file means no layouts. A corrupt file (unparseable, or `layouts` not an array) is logged, moved aside to `waypy-layouts.json.corrupt-<millis>` and the list starts empty. Entries that aren't objects, or have no member with a valid block, are skipped; members without a valid block are dropped; invalid offsets are skipped and duplicates dropped; other invalid fields get the new-waypoint defaults (group name `Group`, member name `Waypoint`, bad colour → white dye, unknown style/logo type → `BLOCK_HIGHLIGHT`/`BLOCK`, opacity clamped); a multi-block `BEACON` member loads as `BLOCK_HIGHLIGHT`. `PresetManager` and `LayoutManager` share their file helpers (`preset.JsonFiles`).
+
 ## Settings (`dev.waypy.config`, `gui.WaypySettingsScreen`)
 
 Global client settings in `<gameDir>/config/waypy.json` (`WaypyConfig`, Gson). Loaded at client init; saved when the settings screen closes. A missing file means defaults; an unreadable or corrupt file logs a warning and the defaults are used. Values are clamped/snapped on load. Unknown fields (e.g. the removed `minIconSize`) are ignored.
@@ -235,7 +270,8 @@ Global client settings in `<gameDir>/config/waypy.json` (`WaypyConfig`, Gson). L
 | Distance in Label | `showDistance` | true | on/off |
 | Group Combine Distance | `groupCombineDistance` | 15 | 5–200 blocks; 1-block steps up to 50, then 5-block steps. One global distance for ALL groups; changing it applies at once. |
 | Show Waypoints | `hideAll` (inverted) | ON (`hideAll` false) | on/off. The same flag as the `Y` key ("hide all"); the key saves it at once, the screen when it closes. |
+| H Opens | `hOpens` | `PRESETS` | `PRESETS` / `LAYOUTS` (`config.PopupTab`): the tab the Open Presets key opens the popup on. The Open Layouts key always opens Layouts. |
 
-`WaypySettingsScreen` extends vanilla `OptionsSubScreen` (title header "Waypy Settings", `OptionsList`, Done footer) and uses vanilla `OptionInstance`s: `SliderableEnum` for the render distance, `IntRange.xmap` sliders for the percentages, `createBoolean` and `Enum` cycle buttons for the rest. Rows: Show Waypoints (310 px), render distance (310 px), then two 150 px columns: Icon Size | Shrink with Distance, Labels | Distance in Label, then Group Combine Distance (310 px, a `SliderableEnum` over `COMBINE_DISTANCE_STEPS`). It is opened from the menu's `Settings...` button. No Mod Menu integration (no 26.2 Mod Menu build could be verified).
+`WaypySettingsScreen` extends vanilla `OptionsSubScreen` (title header "Waypy Settings", `OptionsList`, Done footer) and uses vanilla `OptionInstance`s: `SliderableEnum` for the render distance, `IntRange.xmap` sliders for the percentages, `createBoolean` and `Enum` cycle buttons for the rest. Rows: Show Waypoints (310 px), render distance (310 px), then two 150 px columns: Icon Size | Shrink with Distance, Labels | Distance in Label, then Group Combine Distance (310 px, a `SliderableEnum` over `COMBINE_DISTANCE_STEPS`), then H Opens (310 px, an `Enum` cycle button: `H Opens: Presets`). It is opened from the menu's `Settings...` button. No Mod Menu integration (no 26.2 Mod Menu build could be verified).
 
-All user-visible strings go in `assets/waypy/lang/en_us.json` under the `waypy.` / `key.waypy.` namespaces (settings under `waypy.settings.*`, presets under `waypy.presets.*`).
+All user-visible strings go in `assets/waypy/lang/en_us.json` under the `waypy.` / `key.waypy.` namespaces (settings under `waypy.settings.*`, presets under `waypy.presets.*`, layouts under `waypy.layouts.*`, the popup's tabs under `waypy.popup.*`).

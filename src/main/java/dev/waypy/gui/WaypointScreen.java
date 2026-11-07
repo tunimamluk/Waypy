@@ -31,6 +31,8 @@ import net.minecraft.client.gui.layouts.HeaderAndFooterLayout;
 import net.minecraft.client.gui.layouts.LinearLayout;
 import net.minecraft.client.gui.layouts.SpacerElement;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.inventory.tooltip.TooltipRenderUtil;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.RenderPipelines;
@@ -49,6 +51,8 @@ import net.minecraft.world.phys.Vec3;
 
 import dev.waypy.WaypyClient;
 import dev.waypy.config.WaypyConfig;
+import dev.waypy.preset.Layout;
+import dev.waypy.preset.LayoutManager;
 import dev.waypy.waypoint.LogoType;
 import dev.waypy.waypoint.Waypoint;
 import dev.waypy.waypoint.WaypointGroup;
@@ -95,6 +99,12 @@ public class WaypointScreen extends Screen {
 	private static final Component UNGROUP_TOOLTIP = Component.translatable("waypy.gui.ungroup.tooltip");
 	private static final Component REMOVE_FROM_GROUP = Component.translatable("waypy.gui.remove_from_group");
 	private static final Component REMOVE_FROM_GROUP_TOOLTIP = Component.translatable("waypy.gui.remove_from_group.tooltip");
+	private static final Component CREATE_LAYOUT = Component.translatable("waypy.gui.create_layout");
+	private static final Component CREATE_LAYOUT_NO_BLOCK = Component.translatable("waypy.gui.create_layout.no_block");
+	private static final Component CREATE_LAYOUT_OTHER_DIMENSION = Component.translatable("waypy.gui.create_layout.other_dimension");
+	/** Group context menu: padding of the tooltip-style panel's content, and the button's minimum width. */
+	private static final int MENU_PADDING = 4;
+	private static final int MENU_MIN_BUTTON_WIDTH = 120;
 
 	/** Height of one list row: 2px padding + two text lines / a 16px swatch + 2px padding. */
 	private static final int ENTRY_HEIGHT = 24;
@@ -172,6 +182,11 @@ public class WaypointScreen extends Screen {
 	private @Nullable Button ungroupButton;
 	private @Nullable Button makeGroupButton;
 
+	/** The group context menu (right-click on a group row), or null when closed. Closed by every rebuild. */
+	private @Nullable GroupMenu groupMenu;
+	/** The layout the last "Create layout preset" made (for the devtest), or null. */
+	private @Nullable Layout lastCreatedLayout;
+
 	public WaypointScreen(@Nullable Waypoint selected) {
 		super(Component.translatable("waypy.screen.title"));
 		this.selected = selected;
@@ -181,6 +196,7 @@ public class WaypointScreen extends Screen {
 
 	@Override
 	protected void init() {
+		groupMenu = null;
 		layout = new HeaderAndFooterLayout(this);
 		layout.addTitleHeader(title, font);
 		layout.addToFooter(Button.builder(CommonComponents.GUI_DONE, b -> onClose()).width(Button.BIG_WIDTH).build());
@@ -916,6 +932,132 @@ public class WaypointScreen extends Screen {
 		rebuildWidgets();
 	}
 
+	// ------------------------------------------------------------------ group context menu
+
+	/**
+	 * The group context menu: a small vanilla tooltip-style panel next to the cursor with the group's name and the
+	 * vanilla button "Create layout preset".
+	 */
+	private record GroupMenu(WaypointGroup group, int x, int y, int width, int height, Button createLayout) {
+		boolean contains(double mx, double my) {
+			return mx >= x && mx < x + width && my >= y && my < y + height;
+		}
+	}
+
+	/**
+	 * Right-click on a group row: selects the group and opens its context menu at ({@code mouseX}, {@code mouseY}),
+	 * kept on screen. "Create layout preset" is inactive, with the reason as its tooltip, when the player is in another
+	 * dimension than the group or over no block. Public for the devtest.
+	 */
+	public void openGroupMenu(WaypointGroup group, int mouseX, int mouseY) {
+		if (selectedGroup != group) clickGroup(group);
+		Component blocked = layoutBlockedReason(group);
+		int buttonWidth = Math.max(MENU_MIN_BUTTON_WIDTH, font.width(CREATE_LAYOUT) + 16);
+		int width = buttonWidth;
+		int height = font.lineHeight + MENU_PADDING + Button.DEFAULT_HEIGHT;
+		// The panel's frame reaches 3 px beyond its content (TooltipRenderUtil): keep all of it on screen.
+		int x = Math.clamp(mouseX + 4, 4, Math.max(4, this.width - width - 4));
+		int y = Math.clamp(mouseY + 4, 4, Math.max(4, this.height - height - 4));
+		Button button = Button.builder(CREATE_LAYOUT, b -> createLayoutPreset(group))
+				.bounds(x, y + font.lineHeight + MENU_PADDING, buttonWidth, Button.DEFAULT_HEIGHT)
+				.build();
+		button.active = blocked == null;
+		button.setTooltip(Tooltip.create(blocked != null ? blocked
+				: Component.translatable("waypy.gui.create_layout.tooltip", WaypyClient.presetsKey.getTranslatedKeyMessage())));
+		groupMenu = new GroupMenu(group, x, y, width, height, button);
+	}
+
+	/** Closes the group context menu (if open). */
+	public void closeGroupMenu() {
+		groupMenu = null;
+	}
+
+	/** Why a layout of {@code group} can't be created now, or null if it can. */
+	private @Nullable Component layoutBlockedReason(WaypointGroup group) {
+		if (minecraft.player == null || minecraft.level == null) return CREATE_LAYOUT_NO_BLOCK;
+		if (!minecraft.level.dimension().equals(group.dimension)) return CREATE_LAYOUT_OTHER_DIMENSION;
+		return WaypyClient.findBlockBelow(minecraft) == null ? CREATE_LAYOUT_NO_BLOCK : null;
+	}
+
+	/**
+	 * "Create layout preset" in the group context menu: saves {@code group}'s arrangement as a new layout at once
+	 * ({@link Layout#capture}, {@link LayoutManager#add}), named after the group, with the block the player stands on
+	 * as its anchor (the N key's block: the first non-air block below if airborne). Silent; closes the menu. Public for
+	 * the devtest.
+	 *
+	 * @return the new layout, or null if the player is in another dimension or over no block
+	 */
+	public @Nullable Layout createLayoutPreset(WaypointGroup group) {
+		closeGroupMenu();
+		if (manager.groupById(group.id).orElse(null) != group || layoutBlockedReason(group) != null) return null;
+		BlockPos anchor = WaypyClient.findBlockBelow(minecraft);
+		if (anchor == null) return null;
+		Layout created = Layout.capture(group, manager.members(group), anchor);
+		LayoutManager.get().add(created);
+		lastCreatedLayout = created;
+		return created;
+	}
+
+	/**
+	 * The screen centre of {@code group}'s row (where a right-click opens its context menu), or null if it has no visible
+	 * row. For the devtest.
+	 */
+	public int @Nullable [] groupRowCentre(WaypointGroup group) {
+		if (list == null) return null;
+		WaypointList.Entry row = list.rowOf(group);
+		if (row == null) return null;
+		return new int[] {row.getX() + row.getWidth() / 2, row.getY() + row.getHeight() / 2};
+	}
+
+	/** The open group context menu's group, or null. For the devtest. */
+	public @Nullable WaypointGroup groupMenuGroup() {
+		return groupMenu != null ? groupMenu.group() : null;
+	}
+
+	/** The open group context menu's "Create layout preset" button, or null. For the devtest. */
+	public @Nullable Button groupMenuButton() {
+		return groupMenu != null ? groupMenu.createLayout() : null;
+	}
+
+	/** The layout the last "Create layout preset" made, or null. For the devtest. */
+	public @Nullable Layout lastCreatedLayout() {
+		return lastCreatedLayout;
+	}
+
+	@Override
+	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+		GroupMenu menu = groupMenu;
+		if (menu != null) {
+			// The menu is on top: a click on it goes to its button; any other click just closes it.
+			if (menu.contains(event.x(), event.y())) {
+				Button button = menu.createLayout();
+				if (button.isMouseOver(event.x(), event.y()) && event.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+					button.mouseClicked(event, doubleClick);
+				}
+				return true;
+			}
+			closeGroupMenu();
+			if (event.button() != GLFW.GLFW_MOUSE_BUTTON_RIGHT) return true;
+		}
+		if (event.button() == GLFW.GLFW_MOUSE_BUTTON_RIGHT && list != null && list.isMouseOver(event.x(), event.y())) {
+			WaypointGroup group = list.groupAt(event.x(), event.y());
+			if (group != null) {
+				openGroupMenu(group, (int) event.x(), (int) event.y());
+				return true;
+			}
+		}
+		return super.mouseClicked(event, doubleClick);
+	}
+
+	@Override
+	public boolean keyPressed(KeyEvent event) {
+		if (groupMenu != null && event.isEscape()) {
+			closeGroupMenu();
+			return true;
+		}
+		return super.keyPressed(event);
+	}
+
 	/** The waypoint being edited (or the primary of a multi-selection), if any. */
 	public @Nullable Waypoint selectedWaypoint() {
 		return selected;
@@ -976,7 +1118,10 @@ public class WaypointScreen extends Screen {
 
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
-		super.extractRenderState(graphics, mouseX, mouseY, a);
+		GroupMenu menu = groupMenu;
+		// Under the open context menu nothing else is hovered (no row highlight, no tooltips through it).
+		boolean overMenu = menu != null && menu.contains(mouseX, mouseY);
+		super.extractRenderState(graphics, overMenu ? -1 : mouseX, overMenu ? -1 : mouseY, a);
 		boolean inWorld = minecraft.level != null;
 		Identifier header = inWorld ? INWORLD_HEADER_SEPARATOR : HEADER_SEPARATOR;
 		Identifier footer = inWorld ? INWORLD_FOOTER_SEPARATOR : FOOTER_SEPARATOR;
@@ -998,6 +1143,13 @@ public class WaypointScreen extends Screen {
 				graphics.centeredText(font, line, centerX, y, LIGHT_GRAY);
 				y += 9;
 			}
+		}
+
+		if (menu != null) {
+			graphics.nextStratum();
+			TooltipRenderUtil.extractTooltipBackground(graphics, menu.x(), menu.y(), menu.width(), menu.height(), null);
+			graphics.text(font, ellipsize(font, menu.group().name, menu.width() - 2), menu.x() + 1, menu.y() + 1, LIGHT_GRAY);
+			menu.createLayout().extractRenderState(graphics, mouseX, mouseY, a);
 		}
 	}
 
@@ -1068,6 +1220,19 @@ public class WaypointScreen extends Screen {
 			super.setSelected(primary);
 			if (primary != null) centerScrollOn(primary);
 			populating = false;
+		}
+
+		/** The group of the group row at the given screen position, or null. */
+		@Nullable WaypointGroup groupAt(double x, double y) {
+			return getEntryAtPosition(x, y) instanceof GroupEntry g ? g.group : null;
+		}
+
+		/** The group row of {@code group} (for the devtest's right-click position), or null. */
+		@Nullable Entry rowOf(WaypointGroup group) {
+			for (Entry e : children()) {
+				if (e instanceof GroupEntry g && g.group == group) return e;
+			}
+			return null;
 		}
 
 		/** The waypoints in row order (members under their group first, then the ungrouped ones). */

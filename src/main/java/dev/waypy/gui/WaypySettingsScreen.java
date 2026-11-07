@@ -8,6 +8,7 @@ import org.jspecify.annotations.Nullable;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
+import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.options.OptionsSubScreen;
@@ -15,6 +16,7 @@ import net.minecraft.network.chat.Component;
 
 import dev.waypy.WaypyClient;
 import dev.waypy.config.LabelMode;
+import dev.waypy.config.PopupTab;
 import dev.waypy.config.WaypyConfig;
 
 /**
@@ -33,6 +35,7 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 	private final OptionInstance<Boolean> showDistance;
 	private final OptionInstance<Integer> groupCombineDistance;
 	private final OptionInstance<Boolean> showWaypoints;
+	private final OptionInstance<PopupTab> hOpens;
 
 	public WaypySettingsScreen(@Nullable Screen lastScreen) {
 		this(lastScreen, Minecraft.getInstance().options);
@@ -86,6 +89,16 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 						WaypyClient.toggleAllKey.getTranslatedKeyMessage())),
 				!config.hideAll,
 				value -> config.hideAll = !value);
+
+		// Which tab of the popup the Open Presets key opens (the Open Layouts key always opens Layouts).
+		PopupTab[] tabs = PopupTab.values();
+		hOpens = new OptionInstance<>("waypy.settings.h_opens",
+				OptionInstance.cachedConstantTooltip(Component.translatable("waypy.settings.h_opens.tooltip",
+						WaypyClient.presetsKey.getTranslatedKeyMessage())),
+				(caption, tab) -> Component.translatable(tab.translationKey()),
+				new OptionInstance.Enum<>(List.of(tabs), Codec.INT.xmap(i -> tabs[i], PopupTab::ordinal)),
+				config.hOpens,
+				value -> config.hOpens = value);
 	}
 
 	/** A 5%-step percentage slider over {@code [min, max]}. */
@@ -109,6 +122,12 @@ public class WaypySettingsScreen extends OptionsSubScreen {
 		list.addSmall(iconSize, shrink);
 		list.addSmall(labels, showDistance);
 		list.addBig(groupCombineDistance);
+		list.addBig(hOpens);
+	}
+
+	/** The "H Opens" option's cycle button, or null before init (for the devtest). */
+	public @Nullable AbstractWidget hOpensWidget() {
+		return list != null ? list.findOption(hOpens) : null;
 	}
 
 	@Override

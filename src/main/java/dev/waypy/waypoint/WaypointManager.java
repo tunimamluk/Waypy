@@ -950,6 +950,16 @@ public final class WaypointManager {
 	}
 
 	/**
+	 * {@code el} pretty-printed as in the waypoint files: two-space indent, arrays of primitives (block positions and
+	 * offsets) on one line. Shared with the layout presets file.
+	 */
+	public static String toCompactJson(JsonElement el) {
+		StringBuilder out = new StringBuilder();
+		writeJson(el, out, "");
+		return out.toString();
+	}
+
+	/**
 	 * Pretty-prints like Gson's pretty printing (two-space indent), except that arrays holding only primitives
 	 * (the {@code [x, y, z]} block positions) stay on one line, so a 256-block clump isn't 1280 lines long.
 	 */

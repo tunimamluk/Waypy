@@ -22,9 +22,11 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 
+import dev.waypy.config.PopupTab;
 import dev.waypy.config.WaypyConfig;
 import dev.waypy.gui.PresetScreen;
 import dev.waypy.gui.WaypointScreen;
+import dev.waypy.preset.LayoutManager;
 import dev.waypy.preset.PresetManager;
 import dev.waypy.render.WaypointRenderer;
 import dev.waypy.waypoint.Waypoint;
@@ -43,9 +45,14 @@ public final class WaypyClient implements ClientModInitializer {
 	public static KeyMapping toggleAllKey;
 	/**
 	 * Open Presets (default H): the presets popup for the waypoint stood on, or, with {@link #lookModifierKey} held at
-	 * the press, the waypoint looked at ({@link PresetScreen}); without such a waypoint it only shows a message.
+	 * the press, the waypoint looked at ({@link PresetScreen}); without such a waypoint nothing happens.
 	 */
 	public static KeyMapping presetsKey;
+	/**
+	 * Open Layouts (unbound by default): the same popup as {@link #presetsKey}, always on the Layouts tab, with the same
+	 * targeting (stood on, or looked at with {@link #lookModifierKey}).
+	 */
+	public static KeyMapping layoutsKey;
 	/**
 	 * Held with {@link #createKey} at the press: use the looked-at block instead of the block stood on. Default Left
 	 * Shift. Vanilla keeps every mapping of a key in {@code KeyMapping.MAP} and updates them all, so sharing the key
@@ -67,9 +74,12 @@ public final class WaypyClient implements ClientModInitializer {
 				new KeyMapping("key.waypy.toggle_all", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_Y, CATEGORY));
 		presetsKey = KeyMappingHelper.registerKeyMapping(
 				new KeyMapping("key.waypy.presets", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_H, CATEGORY));
+		layoutsKey = KeyMappingHelper.registerKeyMapping(
+				new KeyMapping("key.waypy.layouts", InputConstants.Type.KEYSYM, InputConstants.UNKNOWN.getValue(), CATEGORY));
 
 		WaypyConfig.load();
 		PresetManager.get().load();
+		LayoutManager.get().load();
 
 		WaypointManager manager = WaypointManager.get();
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> manager.onJoin(client));
@@ -90,6 +100,11 @@ public final class WaypyClient implements ClientModInitializer {
 			while (presetsKey.consumeClick()) {
 				if (client.player != null && client.level != null && client.gui.screen() == null) {
 					openPresets(client, lookModifierKey.isDown());
+				}
+			}
+			while (layoutsKey.consumeClick()) {
+				if (client.player != null && client.level != null && client.gui.screen() == null) {
+					openLayouts(client, lookModifierKey.isDown());
 				}
 			}
 		});
@@ -139,30 +154,58 @@ public final class WaypyClient implements ClientModInitializer {
 	}
 
 	/**
-	 * The H key: opens the Presets popup for the target waypoint. The mode is decided at the press, like the N key:
-	 * {@code lookMode} (the Look-at Modifier held) targets only the waypoint under the crosshair, plain targets only the
-	 * waypoint stood on; there is no fallback between the two. Without a target nothing happens (no popup, no message).
+	 * The H key: opens the Presets popup for the target waypoint, on the tab the "H Opens" setting names
+	 * ({@link WaypyConfig#hOpens}). The mode is decided at the press, like the N key: {@code lookMode} (the Look-at
+	 * Modifier held) targets only the waypoint under the crosshair, plain targets only the waypoint stood on; there is
+	 * no fallback between the two. Without a target nothing happens (no popup, no message).
 	 *
 	 * @return true if the popup opened
 	 */
 	public static boolean openPresets(Minecraft client, boolean lookMode) {
-		Waypoint target = findTargetWaypoint(client, lookMode);
-		if (target == null) return false;
-		client.gui.setScreen(new PresetScreen(target, true));
-		return true;
+		return openPopup(client, lookMode, WaypyConfig.get().hOpens, presetsKey);
 	}
 
 	/**
-	 * The waypoint the Presets popup applies to: with {@code lookMode} the one under the crosshair (the Look-at
-	 * Modifier + N raycast, up to {@link #MAX_RAYCAST_DISTANCE} blocks), else the one whose block the player stands on
-	 * (the N key's block), looked up with {@link WaypointManager#waypointAt} in the current dimension. Silent.
+	 * The Open Layouts key (unbound by default): the same popup and targeting as {@link #openPresets}, always on the
+	 * Layouts tab.
+	 *
+	 * @return true if the popup opened
+	 */
+	public static boolean openLayouts(Minecraft client, boolean lookMode) {
+		return openPopup(client, lookMode, PopupTab.LAYOUTS, layoutsKey);
+	}
+
+	private static boolean openPopup(Minecraft client, boolean lookMode, PopupTab tab, @Nullable KeyMapping openKey) {
+		Target target = findTarget(client, lookMode);
+		if (target == null) return false;
+		client.gui.setScreen(new PresetScreen(target.waypoint(), target.block(), tab, openKey));
+		return true;
+	}
+
+	/** A popup target: the waypoint and the exact block of it that targeting found (where a layout's anchor goes). */
+	public record Target(Waypoint waypoint, BlockPos block) {
+	}
+
+	/**
+	 * The waypoint the Presets popup applies to, and the block that found it: with {@code lookMode} the block under the
+	 * crosshair (the Look-at Modifier + N raycast, up to {@link #MAX_RAYCAST_DISTANCE} blocks), else the block the
+	 * player stands on (the N key's block); the waypoint is looked up with {@link WaypointManager#waypointAt} in the
+	 * current dimension. Silent.
 	 *
 	 * @return the target, or null if that block belongs to no waypoint
 	 */
-	public static @Nullable Waypoint findTargetWaypoint(Minecraft client, boolean lookMode) {
+	public static @Nullable Target findTarget(Minecraft client, boolean lookMode) {
 		if (client.player == null || client.level == null) return null;
 		BlockPos pos = lookMode ? findLookedAtBlock(client) : findBlockBelow(client);
-		return pos != null ? WaypointManager.get().waypointAt(pos, client.level.dimension()) : null;
+		if (pos == null) return null;
+		Waypoint waypoint = WaypointManager.get().waypointAt(pos, client.level.dimension());
+		return waypoint != null ? new Target(waypoint, pos) : null;
+	}
+
+	/** {@link #findTarget}'s waypoint, or null. */
+	public static @Nullable Waypoint findTargetWaypoint(Minecraft client, boolean lookMode) {
+		Target target = findTarget(client, lookMode);
+		return target != null ? target.waypoint() : null;
 	}
 
 	/**

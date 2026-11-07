@@ -32,7 +32,10 @@ import net.minecraft.util.Util;
 import dev.waypy.CreateKeyHandler;
 import dev.waypy.WaypyClient;
 import dev.waypy.config.LabelMode;
+import dev.waypy.config.PopupTab;
 import dev.waypy.config.WaypyConfig;
+import dev.waypy.preset.Layout;
+import dev.waypy.preset.LayoutManager;
 import dev.waypy.preset.Preset;
 import dev.waypy.preset.PresetManager;
 import dev.waypy.gui.PresetScreen;
@@ -210,6 +213,7 @@ final class Scenario {
 		menuMoveAndUndo();
 		menuGroups();
 		presetChecks();
+		layoutChecks();
 
 		step("open BlockPickerScreen", () -> true, this::openBlockPicker, 30);
 		step("screenshot block picker", this::noPendingScreenshots, () -> {
@@ -1776,6 +1780,489 @@ final class Scenario {
 		}, 20);
 	}
 
+	// ---------------------------------------------------------------- layout presets
+
+	/** Layouts area, west of the spawn (grass surface, z 7..49): the source group, then the places it is stamped on. */
+	private static final BlockPos LAYOUT_WALL = new BlockPos(-26, SURFACE_Y, 10);
+	private static final BlockPos LAYOUT_CHEST = new BlockPos(-24, SURFACE_Y, 13);
+	private static final BlockPos LAYOUT_LAMP = new BlockPos(-21, SURFACE_Y, 7);
+	/** Apply 1 (plain H, standing on it): a single waypoint. */
+	private static final BlockPos LAYOUT_T1 = new BlockPos(-26, SURFACE_Y, 19);
+	/** Apply 2 (look-modifier H at its middle block): a 3-block clump, with blockers. */
+	private static final BlockPos LAYOUT_T2 = new BlockPos(-20, SURFACE_Y, 40);
+	private static final BlockPos LAYOUT_T2_LOOKED = new BlockPos(-19, SURFACE_Y, 40);
+	private static final BlockPos LAYOUT_POST = new BlockPos(-15, SURFACE_Y, 40);
+	private static final BlockPos LAYOUT_ROCK = new BlockPos(-17, SURFACE_Y, 43);
+	/** Apply 3 (Open Layouts handler, standing on it): every other member collides, so no group forms. */
+	private static final BlockPos LAYOUT_T3 = new BlockPos(-10, SURFACE_Y, 46);
+	private static final BlockPos LAYOUT_STONE_A = new BlockPos(-8, SURFACE_Y, 49);
+	private static final BlockPos LAYOUT_STONE_B = new BlockPos(-5, SURFACE_Y, 43);
+	private Waypoint layoutWall;
+	private Waypoint layoutChest;
+	private Waypoint layoutLamp;
+	private WaypointGroup layoutGroup;
+	private Waypoint layoutT1;
+	private Waypoint layoutT2;
+	private Waypoint layoutT3;
+	private Waypoint layoutPost;
+	private Waypoint layoutRock;
+	private Waypoint layoutStoneA;
+	private Waypoint layoutStoneB;
+	private WaypointGroup layoutOldPair;
+	private WaypointScreen layoutMenu;
+	private PresetScreen layoutPopup;
+	private final List<Waypoint> layoutCreated = new ArrayList<>();
+
+	/** The settings a layout member stores, as they are on {@code w} (no name, no blocks). */
+	private static String memberSettings(Waypoint w) {
+		return "color=" + Integer.toHexString(w.color) + " " + w.style + " " + w.logoType + " " + w.logoBlock + " opacity="
+				+ w.highlightOpacity + " through=" + w.throughBlocks + " text=" + w.showText + " visible=" + w.visible;
+	}
+
+	private static String memberSettings(Layout.Member m) {
+		return "color=" + Integer.toHexString(m.color) + " " + m.style + " " + m.logoType + " " + m.logoBlock + " opacity="
+				+ m.highlightOpacity + " through=" + m.throughBlocks + " text=" + m.showText + " visible=" + m.visible;
+	}
+
+	private static String groupSettings(WaypointGroup g) {
+		return g.name + " color=" + Integer.toHexString(g.color) + " " + g.logoType + " " + g.logoBlock + " text=" + g.showText
+				+ " visible=" + g.visible;
+	}
+
+	private static String groupSettings(Layout.GroupSettings g) {
+		return g.name + " color=" + Integer.toHexString(g.color) + " " + g.logoType + " " + g.logoBlock + " text=" + g.showText
+				+ " visible=" + g.visible;
+	}
+
+	private static List<BlockPos> line(BlockPos start, int n) {
+		List<BlockPos> out = new ArrayList<>();
+		for (int i = 0; i < n; i++) out.add(start.east(i));
+		return out;
+	}
+
+	private static List<String> layoutTexts() {
+		return LayoutManager.get().all().stream().map(Layout::toString).toList();
+	}
+
+	private void fly(boolean flying) {
+		mc.player.getAbilities().flying = flying;
+		mc.player.onUpdateAbilities();
+	}
+
+	/**
+	 * Layout presets: a group (6-block line clump + 2 singles) saved through the menu's group context menu, standing on
+	 * the clump's first block; stamped with plain H standing on a single waypoint (Layouts tab, number key), with
+	 * look-modifier H at a clump's middle block where some offsets collide (and its old group is left), and with the
+	 * Open Layouts handler where everything else collides (no group). Tabs, search, Ctrl+Tab, the "H Opens" setting,
+	 * rename and delete, the JSON round trip and the corrupt-file fallback; nothing shows an action-bar message.
+	 */
+	private void layoutChecks() {
+		step("layouts: build the source group", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			var dim = mc.level.dimension();
+			LayoutManager lm = LayoutManager.get();
+			while (lm.size() > 0) lm.remove(lm.size());
+			List<BlockPos> used = new ArrayList<>(line(LAYOUT_WALL, 6));
+			used.addAll(List.of(LAYOUT_CHEST, LAYOUT_LAMP));
+			used.addAll(line(LAYOUT_T1, 6));
+			used.addAll(List.of(LAYOUT_T1.offset(2, 0, 3), LAYOUT_T1.offset(5, 0, -3)));
+			used.addAll(line(LAYOUT_T2, 7));
+			used.addAll(List.of(LAYOUT_ROCK, LAYOUT_T2_LOOKED.offset(5, 0, -3)));
+			used.addAll(line(LAYOUT_T3, 6));
+			used.addAll(List.of(LAYOUT_STONE_A, LAYOUT_STONE_B));
+			for (BlockPos pos : used) check(wm.waypointAt(pos, dim) == null, "layout test block " + pos + " already has a waypoint");
+
+			layoutWall = wm.create(LAYOUT_WALL, dim, Identifier.withDefaultNamespace("stone_bricks"));
+			for (BlockPos pos : line(LAYOUT_WALL, 6).subList(1, 6)) {
+				check(wm.addBlock(layoutWall, pos) == WaypointManager.AddBlockResult.ADDED, "wall block " + pos);
+			}
+			layoutWall.setName("Wall Line");
+			layoutWall.color = 0x9D9D97;
+			layoutWall.highlightOpacity = 0.55f;
+			layoutWall.showText = true;
+			layoutChest = wm.create(LAYOUT_CHEST, dim, Identifier.withDefaultNamespace("chest"));
+			layoutChest.setName("Chest Spot");
+			layoutChest.color = 0xFED83D;
+			layoutChest.throughBlocks = true;
+			layoutChest.showText = true;
+			layoutLamp = wm.create(LAYOUT_LAMP, dim, Identifier.withDefaultNamespace("sea_lantern"));
+			layoutLamp.setName("Lamp");
+			layoutLamp.color = 0x3AB3DA;
+			layoutLamp.style = WaypointStyle.BEACON;
+			layoutLamp.logoType = LogoType.NONE;
+			layoutGroup = wm.createGroup(List.of(layoutWall, layoutChest, layoutLamp));
+			check(layoutGroup != null, "source group not made");
+			layoutGroup.setName("Base Layout");
+			layoutGroup.color = 0xF9801D;
+			layoutGroup.logoType = LogoType.BLOCK;
+			layoutGroup.logoBlock = Identifier.withDefaultNamespace("bell");
+			layoutGroup.showText = true;
+			wm.markDirty();
+			fly(false);
+			// Stand on the clump's first block.
+			command("tp @a " + (LAYOUT_WALL.getX() + 0.5) + " " + FEET_Y + " " + (LAYOUT_WALL.getZ() + 0.5) + " 0 30");
+		}, 30);
+		step("layouts: right-click the group row opens the context menu", this::noPendingScreenshots, () -> {
+			check(WaypyClient.findBlockBelow(mc).equals(LAYOUT_WALL), "not standing on the wall's first block: " + WaypyClient.findBlockBelow(mc));
+			layoutMenu = new WaypointScreen(layoutWall);
+			mc.gui.setScreen(layoutMenu);
+			int[] row = layoutMenu.groupRowCentre(layoutGroup);
+			check(row != null, "no row for the group");
+			MouseButtonEvent right = new MouseButtonEvent(row[0], row[1], new MouseButtonInfo(GLFW.GLFW_MOUSE_BUTTON_RIGHT, 0));
+			check(layoutMenu.mouseClicked(right, false), "right-click on the group row not handled");
+			check(layoutMenu.groupMenuGroup() == layoutGroup && layoutMenu.groupMenuButton() != null && layoutMenu.groupMenuButton().active,
+					"context menu not open (or item inactive) for Base Layout");
+			check(layoutMenu.selectedGroup() == layoutGroup, "right-click did not select the group");
+			check(layoutMenu.groupMenuButton().getMessage().getString().equals("Create layout preset"), "menu item reads "
+					+ layoutMenu.groupMenuButton().getMessage().getString());
+			parkMouse();
+		}, 10);
+		screenshot("70_menu_group_context");
+		step("layouts: Create layout preset (context menu)", this::noPendingScreenshots, () -> {
+			LayoutManager lm = LayoutManager.get();
+			clearOverlay();
+			clickCentre(layoutMenu, layoutMenu.groupMenuButton(), 0);
+			checkNoOverlay("creating a layout");
+			Layout l = layoutMenu.lastCreatedLayout();
+			check(l != null && lm.size() == 1 && lm.byNumber(1) == l && layoutMenu.groupMenuGroup() == null,
+					"Create layout preset did not save one layout (and close the menu): " + layoutTexts());
+			check(l.name.equals("Base Layout") && l.members.size() == 3, "layout " + l);
+			Layout.Member wall = l.members.get(0), chest = l.members.get(1), lamp = l.members.get(2);
+			List<BlockPos> wallOffsets = new ArrayList<>();
+			for (int i = 0; i < 6; i++) wallOffsets.add(new BlockPos(i, 0, 0));
+			check(wall.name.equals("Wall Line") && wall.offsets.equals(wallOffsets) && wall.offsets.getFirst().equals(BlockPos.ZERO),
+					"wall member " + wall);
+			check(chest.name.equals("Chest Spot") && chest.offsets.equals(List.of(new BlockPos(2, 0, 3))), "chest member " + chest);
+			check(lamp.name.equals("Lamp") && lamp.offsets.equals(List.of(new BlockPos(5, 0, -3))), "lamp member " + lamp);
+			check(l.anchorMember() == wall, "anchor member is not the wall");
+			check(memberSettings(wall).equals(memberSettings(layoutWall)) && memberSettings(chest).equals(memberSettings(layoutChest))
+					&& memberSettings(lamp).equals(memberSettings(layoutLamp)), "member settings differ: " + l);
+			check(groupSettings(l.group).equals(groupSettings(layoutGroup)), "group settings " + l.group);
+			DevtestClient.log("ASSERT ok: group context menu -> \"Create layout preset\" saved \"Base Layout\" anchored on the clump's first block "
+					+ LAYOUT_WALL + ": wall offsets " + wall.offsets + " (anchor (0,0,0)), Chest Spot " + chest.offsets + ", Lamp "
+					+ lamp.offsets + ", group settings " + groupSettings(l.group) + "; no message");
+			// A second layout (Mine Area, anchored here, so none of its members holds the anchor), for the number keys and search.
+			mc.gui.setScreen(null);
+			layoutMenu = new WaypointScreen(mineEntrance);
+			mc.gui.setScreen(layoutMenu);
+			int[] row = layoutMenu.groupRowCentre(mineArea);
+			check(row != null, "no row for Mine Area");
+			layoutMenu.mouseClicked(new MouseButtonEvent(row[0], row[1], new MouseButtonInfo(GLFW.GLFW_MOUSE_BUTTON_RIGHT, 0)), false);
+			check(layoutMenu.groupMenuGroup() == mineArea, "context menu not open for Mine Area");
+			clickCentre(layoutMenu, layoutMenu.groupMenuButton(), 0);
+			Layout mine = lm.byNumber(2);
+			check(lm.size() == 2 && mine != null && mine.name.equals("Mine Area") && mine.members.size() == 3 && mine.anchorMember() == null,
+					"Mine Area layout: " + layoutTexts());
+			// A click outside the menu only closes it; Esc closes it too.
+			layoutMenu.mouseClicked(new MouseButtonEvent(row[0], row[1], new MouseButtonInfo(GLFW.GLFW_MOUSE_BUTTON_RIGHT, 0)), false);
+			check(layoutMenu.groupMenuGroup() == mineArea, "context menu did not reopen");
+			press(GLFW.GLFW_KEY_ESCAPE, '\0');
+			check(mc.gui.screen() == layoutMenu && layoutMenu.groupMenuGroup() == null, "Esc did not just close the context menu");
+			// A group in another dimension: the item is inactive (with the reason as its tooltip) and creates nothing.
+			WaypointManager wm = WaypointManager.get();
+			Waypoint n1 = wm.create(new BlockPos(7, 70, 7), net.minecraft.world.level.Level.NETHER, null);
+			Waypoint n2 = wm.create(new BlockPos(8, 70, 7), net.minecraft.world.level.Level.NETHER, null);
+			WaypointGroup nether = wm.createGroup(List.of(n1, n2));
+			layoutMenu.openGroupMenu(nether, 100, 100);
+			check(layoutMenu.groupMenuButton() != null && !layoutMenu.groupMenuButton().active, "item active for a Nether group");
+			check(layoutMenu.createLayoutPreset(nether) == null && lm.size() == 2, "a layout was made in the wrong dimension");
+			wm.remove(n1.id);
+			wm.remove(n2.id);
+			wm.expireDeletions(true);
+			DevtestClient.log("ASSERT ok: second layout \"Mine Area\" (anchor in no member); right-click reopens, Esc closes the menu only;"
+					+ " a Nether group's item is inactive and creates nothing");
+			mc.gui.setScreen(null);
+		}, 5);
+		step("layouts: place the target, fly to the vantage point", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			layoutT1 = wm.create(LAYOUT_T1, mc.level.dimension(), Identifier.withDefaultNamespace("grass_block"));
+			layoutT1.setName("Outpost");
+			layoutT1.color = 0xF9FFFE;
+			layoutT1.showText = true;
+			wm.markDirty();
+			fly(true);
+			command("tp @a -23.5 " + (FEET_Y + 6) + " 13.5 0 45");
+		}, 40);
+		screenshot("72_world_before_layout");
+		step("layouts: stand on Outpost", this::noPendingScreenshots, () -> {
+			fly(false);
+			command("tp @a " + (LAYOUT_T1.getX() + 0.5) + " " + FEET_Y + " " + (LAYOUT_T1.getZ() + 0.5) + " 0 30");
+		}, 20);
+		step("layouts: plain H -> Presets tab; click Layouts", this::noPendingScreenshots, () -> {
+			check(WaypyConfig.get().hOpens == PopupTab.PRESETS, "H Opens is not Presets by default");
+			check(WaypyClient.openPresets(mc, false) && mc.gui.screen() instanceof PresetScreen, "plain H did not open on Outpost");
+			PresetScreen p = layoutPopup = (PresetScreen) mc.gui.screen();
+			check(p.target() == layoutT1 && p.targetBlock().equals(LAYOUT_T1) && p.tab() == PopupTab.PRESETS,
+					"plain H: target " + p.target().name + " block " + p.targetBlock() + " tab " + p.tab());
+			check(p.visibleNumbers().size() == PresetManager.get().size() && p.plusButton().active, "Presets tab list/+");
+			clickCentre(p, p.tabButton(PopupTab.LAYOUTS), 0);
+			check(p.tab() == PopupTab.LAYOUTS && p.visibleNumbers().equals(List.of(1, 2)), "Layouts tab shows " + p.visibleNumbers());
+			check(!p.plusButton().active, "+ active in the Layouts tab");
+			check(p.presetButtons().get(0).getMessage().getString().equals("1  Base Layout · 3 waypoints"),
+					"layout button reads " + p.presetButtons().get(0).getMessage().getString());
+			check(!p.searchBox().isFocused() && p.searchBox().getValue().isEmpty(), "search not reset by the tab switch");
+			parkMouse();
+		}, 10);
+		screenshot("71_popup_layouts");
+		step("layouts: search, Ctrl+Tab, number key 1 applies Base Layout", this::noPendingScreenshots, () -> {
+			PresetScreen p = layoutPopup;
+			type("mine");
+			check(p.searchBox().isFocused() && p.visibleNumbers().equals(List.of(2)), "\"mine\" shows " + p.visibleNumbers());
+			type("x");
+			check(p.presetButtons().isEmpty(), "\"minex\" shows " + p.visibleNumbers());
+			press(GLFW.GLFW_KEY_ESCAPE, '\0');
+			check(mc.gui.screen() == p && p.searchBox().getValue().isEmpty() && !p.searchBox().isFocused() && p.visibleNumbers().equals(List.of(1, 2)),
+					"Esc did not clear the layout search");
+			type("base");
+			p.keyPressed(new KeyEvent(GLFW.GLFW_KEY_TAB, 0, GLFW.GLFW_MOD_CONTROL));
+			check(p.tab() == PopupTab.PRESETS && p.searchBox().getValue().isEmpty() && !p.searchBox().isFocused()
+					&& p.visibleNumbers().size() == PresetManager.get().size(), "Ctrl+Tab did not switch to Presets (search cleared)");
+			p.keyPressed(new KeyEvent(GLFW.GLFW_KEY_TAB, 0, GLFW.GLFW_MOD_CONTROL));
+			check(p.tab() == PopupTab.LAYOUTS, "Ctrl+Tab did not switch back to Layouts");
+			String presetsBefore = copied(layoutT1);
+			clearOverlay();
+			press(GLFW.GLFW_KEY_1, '1');
+			check(mc.gui.screen() == null, "popup still open after key 1");
+			checkNoOverlay("applying a layout");
+			Layout.ApplyResult r = p.lastLayoutResult();
+			check(r != null, "no layout applied");
+			Layout base = LayoutManager.get().byNumber(1);
+			// T keeps its name and joins: it takes the wall member's settings and its 6 blocks laid out from B.
+			check(layoutT1.name.equals("Outpost") && layoutT1.blocks().equals(line(LAYOUT_T1, 6)) && layoutT1.anchor().equals(LAYOUT_T1),
+					"Outpost after apply: " + layoutT1.name + " " + layoutT1.blocks());
+			check(memberSettings(layoutT1).equals(memberSettings(base.members.get(0))), "Outpost settings " + memberSettings(layoutT1)
+					+ " (were " + presetsBefore + ")");
+			check(r.created().size() == 2 && r.skippedBlocks() == 0 && r.skippedMembers() == 0 && r.mergedBlocks() == 5, "result " + r);
+			Waypoint chest = r.created().get(0), lamp = r.created().get(1);
+			check(chest.name.equals("Chest Spot") && chest.blocks().equals(List.of(LAYOUT_T1.offset(2, 0, 3)))
+					&& memberSettings(chest).equals(memberSettings(layoutChest)), "Chest Spot copy " + chest + " " + memberSettings(chest));
+			check(lamp.name.equals("Lamp") && lamp.blocks().equals(List.of(LAYOUT_T1.offset(5, 0, -3))) && lamp.isBeacon()
+					&& memberSettings(lamp).equals(memberSettings(layoutLamp)), "Lamp copy " + lamp + " " + memberSettings(lamp));
+			WaypointManager wm = WaypointManager.get();
+			WaypointGroup g = r.group();
+			check(g != null && wm.groupOf(layoutT1.id) == g && wm.members(g).equals(List.of(layoutT1, chest, lamp))
+					&& groupSettings(g).equals(groupSettings(base.group)) && g != layoutGroup && g.dimension.equals(layoutT1.dimension),
+					"new group " + (g == null ? "none" : groupSettings(g) + " " + names(wm.members(g))));
+			check(wm.members(layoutGroup).equals(List.of(layoutWall, layoutChest, layoutLamp)), "the source group changed");
+			layoutCreated.addAll(r.created());
+			DevtestClient.log("ASSERT ok: plain H standing on Outpost opened Presets (H Opens default), Layouts tab click shows [1, 2]; "
+					+ "search \"mine\" -> [2], Esc clears, Ctrl+Tab switches tabs (search cleared); key 1 stamped Base Layout at "
+					+ LAYOUT_T1 + ": Outpost kept its name, took the wall's settings and 6 blocks " + layoutT1.blocks()
+					+ ", Chest Spot at " + chest.anchor() + ", Lamp (beacon) at " + lamp.anchor() + ", all 3 in new group "
+					+ groupSettings(g) + "; no message");
+			fly(true);
+			command("tp @a -23.5 " + (FEET_Y + 6) + " 13.5 0 45");
+		}, 40);
+		screenshot("73_world_after_layout");
+		step("layouts: second target (clump in an old group) and blockers", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			var dim = mc.level.dimension();
+			layoutT2 = wm.create(LAYOUT_T2, dim, Identifier.withDefaultNamespace("grass_block"));
+			layoutT2.setName("Ridge");
+			check(wm.addBlock(layoutT2, LAYOUT_T2.east()) == WaypointManager.AddBlockResult.ADDED
+					&& wm.addBlock(layoutT2, LAYOUT_T2.east(2)) == WaypointManager.AddBlockResult.ADDED, "Ridge clump");
+			layoutPost = wm.create(LAYOUT_POST, dim, null);
+			layoutPost.setName("Post");
+			layoutRock = wm.create(LAYOUT_ROCK, dim, null);
+			layoutRock.setName("Rock");
+			layoutOldPair = wm.createGroup(List.of(layoutT2, layoutPost));
+			check(layoutOldPair != null, "old pair not made");
+			layoutT3 = wm.create(LAYOUT_T3, dim, null);
+			layoutT3.setName("Lonely");
+			layoutStoneA = wm.create(LAYOUT_STONE_A, dim, null);
+			layoutStoneB = wm.create(LAYOUT_STONE_B, dim, null);
+			wm.markDirty();
+			fly(false);
+			// Stand 4 blocks south of Ridge's middle block, looking north at its top face (atan(1.62 / 4) = 22°).
+			command("tp @a " + (LAYOUT_T2_LOOKED.getX() + 0.5) + " " + FEET_Y + " " + (LAYOUT_T2_LOOKED.getZ() + 4.5) + " 180 22");
+		}, 30);
+		step("layouts: look-modifier H at Ridge's middle block, collisions", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			check(WaypyClient.openPresets(mc, true) && mc.gui.screen() instanceof PresetScreen, "look-mode H did not open on Ridge");
+			PresetScreen p = (PresetScreen) mc.gui.screen();
+			check(p.target() == layoutT2 && p.targetBlock().equals(LAYOUT_T2_LOOKED) && !p.targetBlock().equals(layoutT2.anchor()),
+					"look-mode target " + p.target().name + " block " + p.targetBlock());
+			clickCentre(p, p.tabButton(PopupTab.LAYOUTS), 0);
+			check(p.tab() == PopupTab.LAYOUTS, "Layouts tab not selected");
+			clearOverlay();
+			clickCentre(p, p.presetButtons().get(0), 0);
+			check(mc.gui.screen() == null, "popup still open after the click");
+			checkNoOverlay("applying a layout with collisions");
+			Layout.ApplyResult r = p.lastLayoutResult();
+			// Wall offsets 0..5 from B (-19): -19 and -18 are Ridge's own, -17 and -16 free, -15 is Post (skipped), -14 free.
+			List<BlockPos> expected = new ArrayList<>(line(LAYOUT_T2, 3));
+			expected.addAll(List.of(LAYOUT_T2_LOOKED.east(2), LAYOUT_T2_LOOKED.east(3), LAYOUT_T2_LOOKED.east(5)));
+			check(r != null && layoutT2.blocks().equals(expected) && layoutT2.name.equals("Ridge") && layoutT2.anchor().equals(LAYOUT_T2),
+					"Ridge after apply: " + layoutT2.blocks());
+			check(r.mergedBlocks() == 3 && r.skippedBlocks() == 2 && r.skippedMembers() == 1 && r.created().size() == 1,
+					"result " + r);
+			Waypoint lamp = r.created().getFirst();
+			check(lamp.name.equals("Lamp") && lamp.blocks().equals(List.of(LAYOUT_T2_LOOKED.offset(5, 0, -3))), "lamp " + lamp);
+			check(layoutPost.blocks().equals(List.of(LAYOUT_POST)) && layoutRock.blocks().equals(List.of(LAYOUT_ROCK))
+					&& wm.waypointAt(LAYOUT_ROCK, layoutRock.dimension) == layoutRock && wm.waypointAt(LAYOUT_POST, layoutPost.dimension) == layoutPost,
+					"a blocker changed");
+			WaypointGroup g = r.group();
+			check(g != null && wm.members(g).equals(List.of(layoutT2, lamp)) && groupSettings(g).equals(groupSettings(LayoutManager.get().byNumber(1).group)),
+					"group of Ridge + Lamp: " + (g == null ? "none" : names(wm.members(g))));
+			check(wm.groupById(layoutOldPair.id).isEmpty() && wm.groupOf(layoutPost.id) == null, "Ridge's old group not dissolved");
+			layoutCreated.addAll(r.created());
+			DevtestClient.log("ASSERT ok: look-modifier H at Ridge's middle block " + LAYOUT_T2_LOOKED + " (not its anchor " + LAYOUT_T2
+					+ "): the wall laid out from that block, Post's block skipped -> Ridge " + layoutT2.blocks()
+					+ "; Chest Spot fully on Rock -> not created; Lamp created; group [Ridge, Lamp]; Ridge left its old pair (dissolved)");
+			fly(false);
+			command("tp @a " + (LAYOUT_T3.getX() + 0.5) + " " + FEET_Y + " " + (LAYOUT_T3.getZ() + 0.5) + " 0 30");
+		}, 20);
+		step("layouts: Open Layouts handler, all other members collide -> no group", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			check(WaypyClient.layoutsKey.isUnbound() && WaypyClient.layoutsKey.getDefaultKey().equals(com.mojang.blaze3d.platform.InputConstants.UNKNOWN),
+					"Open Layouts is bound by default: " + WaypyClient.layoutsKey.getDefaultKey());
+			check(WaypyClient.openLayouts(mc, false) && mc.gui.screen() instanceof PresetScreen, "Open Layouts did not open on Lonely");
+			PresetScreen p = (PresetScreen) mc.gui.screen();
+			check(p.tab() == PopupTab.LAYOUTS && p.target() == layoutT3 && p.targetBlock().equals(LAYOUT_T3), "Open Layouts: tab " + p.tab()
+					+ " target " + p.target().name);
+			clearOverlay();
+			press(GLFW.GLFW_KEY_1, '1');
+			check(mc.gui.screen() == null, "popup still open");
+			checkNoOverlay("Open Layouts apply");
+			Layout.ApplyResult r = p.lastLayoutResult();
+			check(r != null && r.created().isEmpty() && r.skippedMembers() == 2 && r.group() == null && wm.groupOf(layoutT3.id) == null
+					&& layoutT3.blocks().equals(line(LAYOUT_T3, 6)) && layoutT3.name.equals("Lonely"), "Lonely after apply: " + r + " " + layoutT3.blocks());
+			// Looking at the sky / standing on free ground: nothing opens.
+			command("tp @a " + (LAYOUT_T3.getX() + 0.5) + " " + FEET_Y + " " + (LAYOUT_T3.getZ() - 2.5) + " 0 -60");
+			DevtestClient.log("ASSERT ok: Open Layouts (unbound by default) handler opened on the Layouts tab for Lonely; key 1 merged the wall ("
+					+ layoutT3.size() + " blocks), both other members collided -> none created, no group formed (1 waypoint)");
+		}, 20);
+		step("layouts: Open Layouts without a target does nothing", this::noPendingScreenshots, () -> {
+			clearOverlay();
+			check(!WaypyClient.openLayouts(mc, false) && !WaypyClient.openLayouts(mc, true) && mc.gui.screen() == null,
+					"Open Layouts opened without a target");
+			checkNoOverlay("Open Layouts with no target");
+			command("tp @a " + (LAYOUT_T3.getX() + 0.5) + " " + FEET_Y + " " + (LAYOUT_T3.getZ() + 0.5) + " 0 30");
+		}, 20);
+		step("layouts: H Opens setting", this::noPendingScreenshots, () -> {
+			WaypySettingsScreen settings = new WaypySettingsScreen(null);
+			mc.gui.setScreen(settings);
+			var button = settings.hOpensWidget();
+			check(button != null && button.getMessage().getString().equals("H Opens: Presets"), "H Opens button reads "
+					+ (button == null ? "nothing" : button.getMessage().getString()));
+			((net.minecraft.client.gui.components.AbstractButton) button).onPress(key(GLFW.GLFW_KEY_ENTER)); // as Enter on the focused button
+			check(WaypyConfig.get().hOpens == PopupTab.LAYOUTS && button.getMessage().getString().equals("H Opens: Layouts"),
+					"clicking H Opens gave " + WaypyConfig.get().hOpens + " / " + button.getMessage().getString());
+			parkMouse();
+		}, 10);
+		screenshot("74_settings_h_opens");
+		step("layouts: H opens on Layouts; rename form", this::noPendingScreenshots, () -> {
+			mc.gui.setScreen(null); // saves the config
+			WaypyConfig.load();
+			check(WaypyConfig.get().hOpens == PopupTab.LAYOUTS, "H Opens not saved: " + WaypyConfig.get().hOpens);
+			check(WaypyClient.openPresets(mc, false) && mc.gui.screen() instanceof PresetScreen p && p.tab() == PopupTab.LAYOUTS
+					&& p.target() == layoutT3, "H did not open on the Layouts tab");
+			DevtestClient.log("ASSERT ok: H Opens = Layouts (saved to waypy.json and reloaded): H opens the popup on the Layouts tab");
+			PresetScreen p = layoutPopup = (PresetScreen) mc.gui.screen();
+			clickCentre(p, p.presetButtons().get(1), 1); // right-click Mine Area
+			check(p.mode() == PresetScreen.Mode.LAYOUT_FORM && p.editingNumber() == 2 && p.nameBox() != null
+					&& p.nameBox().getValue().equals("Mine Area") && p.nameBox().isFocused() && p.deleteButton() != null,
+					"right-click did not open the rename form for layout 2");
+			p.nameBox().setValue("Mine Copy");
+			parkMouse();
+		}, 10);
+		screenshot("75_layout_rename_form");
+		step("layouts: rename, cancel, delete", this::noPendingScreenshots, () -> {
+			PresetScreen p = layoutPopup;
+			LayoutManager lm = LayoutManager.get();
+			press(GLFW.GLFW_KEY_ENTER, '\0');
+			check(p.mode() == PresetScreen.Mode.LIST && lm.byNumber(2).name.equals("Mine Copy") && p.visibleNumbers().equals(List.of(1, 2))
+					&& p.presetButtons().get(1).getMessage().getString().startsWith("2  Mine Copy"), "rename gave " + layoutTexts());
+			clickCentre(p, p.presetButtons().get(0), 1);
+			p.nameBox().setValue("Nope");
+			clickCentre(p, p.cancelButton(), 0);
+			check(p.mode() == PresetScreen.Mode.LIST && lm.byNumber(1).name.equals("Base Layout"), "Cancel renamed: " + layoutTexts());
+			clickCentre(p, p.presetButtons().get(1), 1);
+			clickCentre(p, p.deleteButton(), 0);
+			check(lm.size() == 1 && lm.byNumber(1).name.equals("Base Layout") && p.visibleNumbers().equals(List.of(1)), "Delete gave " + layoutTexts());
+			DevtestClient.log("ASSERT ok: layout rename (Enter) kept number 2 (\"Mine Copy\"), Cancel kept \"Base Layout\", Delete left " + lm.size()
+					+ " layout");
+			mc.gui.setScreen(null);
+			setConfig(c -> {
+			});
+		}, 5);
+		step("layouts: JSON round trip, corrupt file", this::noPendingScreenshots, this::checkLayoutFile, 5);
+		step("layouts: clean up", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			List<Waypoint> all = new ArrayList<>(List.of(layoutWall, layoutChest, layoutLamp, layoutT1, layoutT2, layoutT3, layoutPost,
+					layoutRock, layoutStoneA, layoutStoneB));
+			all.addAll(layoutCreated);
+			for (Waypoint w : all) wm.remove(w.id);
+			wm.expireDeletions(true);
+			fly(false);
+			command("tp @a 0.5 " + FEET_Y + " 0.5 0 8");
+		}, 20);
+	}
+
+	private void checkLayoutFile() {
+		LayoutManager lm = LayoutManager.get();
+		java.nio.file.Path file = LayoutManager.path();
+		try {
+			List<String> snapshot = layoutTexts();
+			lm.save();
+			String json = java.nio.file.Files.readString(file);
+			com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+			com.google.gson.JsonArray arr = root.getAsJsonArray("layouts");
+			check(root.get("version").getAsInt() == 1 && arr.size() == 1, "file has " + arr.size() + " layouts");
+			com.google.gson.JsonObject base = arr.get(0).getAsJsonObject();
+			com.google.gson.JsonObject group = base.getAsJsonObject("group");
+			com.google.gson.JsonArray members = base.getAsJsonArray("members");
+			check(base.get("name").getAsString().equals("Base Layout") && group.get("color").getAsString().equals("#F9801D")
+					&& group.get("logoBlock").getAsString().equals("minecraft:bell") && members.size() == 3, "Base Layout written as " + base);
+			com.google.gson.JsonObject wall = members.get(0).getAsJsonObject();
+			check(wall.getAsJsonArray("blocks").toString().equals("[[0,0,0],[1,0,0],[2,0,0],[3,0,0],[4,0,0],[5,0,0]]")
+					&& json.contains("[5, 0, 0]\n"), "wall blocks written as " + wall.getAsJsonArray("blocks"));
+			lm.load();
+			check(layoutTexts().equals(snapshot), "reload differs:\n" + layoutTexts() + "\n" + snapshot);
+			// Corrupt file: no layouts, the file moved aside.
+			java.nio.file.Files.writeString(file, "{ \"layouts\": [ {\"name\": \"Broken\", ");
+			lm.load();
+			List<java.nio.file.Path> backups;
+			try (var files = java.nio.file.Files.list(file.getParent())) {
+				backups = files.filter(f -> f.getFileName().toString().startsWith("waypy-layouts.json.corrupt-")).toList();
+			}
+			check(lm.size() == 0 && !java.nio.file.Files.exists(file) && backups.size() == 1, "corrupt file: " + lm.size()
+					+ " layouts, backups " + backups);
+			for (java.nio.file.Path b : backups) java.nio.file.Files.delete(b);
+			// "layouts" not an array: corrupt too.
+			java.nio.file.Files.writeString(file, "{\"layouts\": 5}");
+			lm.load();
+			try (var files = java.nio.file.Files.list(file.getParent())) {
+				backups = files.filter(f -> f.getFileName().toString().startsWith("waypy-layouts.json.corrupt-")).toList();
+			}
+			check(lm.size() == 0 && backups.size() == 1, "layouts not an array: " + lm.size());
+			for (java.nio.file.Path b : backups) java.nio.file.Files.delete(b);
+			// Bad entries: skipped, or loaded with defaults for bad fields (bad offsets dropped; a clump never a beacon).
+			java.nio.file.Files.writeString(file, "{\"layouts\": [42, {\"name\": \"Empty\", \"members\": []},"
+					+ " {\"name\": \"Odd\", \"group\": {\"color\": \"zz\", \"logoType\": \"TEXT\"}, \"members\": [{\"name\": \"M\", \"style\": \"BEACON\","
+					+ " \"highlightOpacity\": 7, \"blocks\": [[1, 2], \"x\", [0, 0, 0], [0, 0, 0], [3, 0, 1]]}, {\"blocks\": []}]}]}");
+			lm.load();
+			Layout odd = lm.byNumber(1);
+			check(lm.size() == 1 && odd.name.equals("Odd") && odd.members.size() == 1 && odd.group.logoType == LogoType.BLOCK
+					&& odd.group.color == WaypointManager.paletteColor(0) && odd.group.name.equals("Group")
+					&& odd.members.get(0).offsets.equals(List.of(BlockPos.ZERO, new BlockPos(3, 0, 1)))
+					&& odd.members.get(0).style == WaypointStyle.BLOCK_HIGHLIGHT && odd.members.get(0).highlightOpacity == 1.0f,
+					"lenient load gave " + layoutTexts());
+			// Missing file: no layouts.
+			java.nio.file.Files.delete(file);
+			lm.load();
+			check(lm.size() == 0, "missing file loaded " + lm.size() + " layouts");
+			// Restore the good file.
+			java.nio.file.Files.writeString(file, json);
+			lm.load();
+			check(layoutTexts().equals(snapshot), "restore differs");
+		} catch (java.io.IOException e) {
+			throw new IllegalStateException(e);
+		}
+		DevtestClient.log("ASSERT ok: layouts JSON round trip (" + file.getFileName() + ", one [dx, dy, dz] per line), corrupt file and non-array"
+				+ " -> none + backup, bad entries skipped/defaulted, missing file -> none");
+	}
+
 	private void checkPresetFile() {
 		PresetManager pm = PresetManager.get();
 		java.nio.file.Path file = PresetManager.path();
@@ -2126,7 +2613,7 @@ final class Scenario {
 	/** Vanilla Key Binds screen, scrolled to the Waypy category. */
 	private void openKeyBinds() {
 		for (KeyMapping k : List.of(WaypyClient.createKey, WaypyClient.menuKey, WaypyClient.lookModifierKey, WaypyClient.toggleAllKey,
-				WaypyClient.presetsKey)) {
+				WaypyClient.presetsKey, WaypyClient.layoutsKey)) {
 			check(java.util.Arrays.asList(mc.options.keyMappings).contains(k), k.getName() + " not in options.keyMappings");
 		}
 		var y = com.mojang.blaze3d.platform.InputConstants.Type.KEYSYM.getOrCreate(org.lwjgl.glfw.GLFW.GLFW_KEY_Y);
@@ -2151,6 +2638,12 @@ final class Scenario {
 				"mappings sharing H: " + sharingH);
 		DevtestClient.log("ASSERT ok: key.waypy.presets (\"Open Presets\") defaults to H; the only other H default is the F3+H debug combo "
 				+ sharingH);
+		check(WaypyClient.layoutsKey.getName().equals("key.waypy.layouts") && WaypyClient.layoutsKey.isUnbound()
+				&& WaypyClient.layoutsKey.getDefaultKey().equals(com.mojang.blaze3d.platform.InputConstants.UNKNOWN)
+				&& WaypyClient.layoutsKey.getCategory() == WaypyClient.CATEGORY
+				&& net.minecraft.client.resources.language.I18n.get("key.waypy.layouts").equals("Open Layouts"),
+				"Open Layouts key: " + WaypyClient.layoutsKey.getDefaultKey());
+		DevtestClient.log("ASSERT ok: key.waypy.layouts (\"Open Layouts\") is in the Waypy category, unbound by default");
 		KeyBindsScreen screen = new KeyBindsScreen(new WaypointScreen(null), mc.options);
 		mc.gui.setScreen(screen);
 		try {
