@@ -51,7 +51,7 @@ public final class WaypyConfig {
 	public static final int DEFAULT_COMBINE_DISTANCE = 15;
 	public static final int MIN_COMBINE_DISTANCE = 5;
 	public static final int MAX_COMBINE_DISTANCE = 200;
-	/** The slider positions of a group's combine distance, in blocks: 1-block steps up to 50, then 5-block steps up to 200. */
+	/** The slider positions of the group combine distance, in blocks: 1-block steps up to 50, then 5-block steps up to 200. */
 	public static final List<Integer> COMBINE_DISTANCE_STEPS;
 
 	static {
@@ -83,7 +83,7 @@ public final class WaypyConfig {
 	public LabelMode labels = LabelMode.ALWAYS;
 	/** Show the distance after the name in labels. */
 	public boolean showDistance = true;
-	/** The combine distance (blocks) new groups start with; each group then has its own. */
+	/** The distance (blocks) beyond which a group is drawn combined, as one pin. One value for all groups. */
 	public int groupCombineDistance = DEFAULT_COMBINE_DISTANCE;
 
 	// ---------------------------------------------------------------- access

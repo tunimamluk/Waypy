@@ -53,7 +53,6 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import dev.waypy.WaypyClient;
-import dev.waypy.config.WaypyConfig;
 import dev.waypy.waypoint.LogoType;
 import dev.waypy.waypoint.Waypoint;
 import dev.waypy.waypoint.WaypointGroup;
@@ -97,7 +96,6 @@ public class WaypointScreen extends Screen {
 	private static final Component MAKE_GROUP_TOOLTIP = Component.translatable("waypy.gui.make_group.tooltip");
 	private static final Component MAKE_GROUP_MIXED = Component.translatable("waypy.gui.make_group.mixed");
 	private static final Component SELECTED_HINT = Component.translatable("waypy.gui.selected_hint");
-	private static final Component COMBINE_TOOLTIP = Component.translatable("waypy.gui.combine_distance.tooltip");
 	private static final Component UNGROUP = Component.translatable("waypy.gui.ungroup");
 	private static final Component UNGROUP_TOOLTIP = Component.translatable("waypy.gui.ungroup.tooltip");
 	private static final Component REMOVE_FROM_GROUP = Component.translatable("waypy.gui.remove_from_group");
@@ -176,7 +174,6 @@ public class WaypointScreen extends Screen {
 	private @Nullable CycleButton<Boolean> visibleButton;
 	private @Nullable CycleButton<Boolean> showTextButton;
 	private @Nullable Button removeFromGroupButton;
-	private @Nullable CombineDistanceSlider combineSlider;
 	private @Nullable Button ungroupButton;
 	private @Nullable Button makeGroupButton;
 
@@ -433,7 +430,6 @@ public class WaypointScreen extends Screen {
 		visibleButton = null;
 		showTextButton = null;
 		removeFromGroupButton = null;
-		combineSlider = null;
 		ungroupButton = null;
 		makeGroupButton = null;
 		updateDeleteButton();
@@ -505,8 +501,6 @@ public class WaypointScreen extends Screen {
 		colorWidgets(() -> g.color, color -> g.color = color);
 		logoWidgets(half, () -> g.logoType, type -> g.logoType = type, () -> g.logoBlock, id -> g.logoBlock = id);
 		showTextButton = showTextButton(half, g.showText, value -> g.showText = value, SHOW_TEXT_GROUP_TOOLTIP);
-		combineSlider = new CombineDistanceSlider(half, g);
-		combineSlider.setTooltip(Tooltip.create(COMBINE_TOOLTIP));
 		ungroupButton = Button.builder(UNGROUP, b -> ungroupSelected())
 				.size(half, Button.DEFAULT_HEIGHT).tooltip(Tooltip.create(UNGROUP_TOOLTIP)).build();
 	}
@@ -779,8 +773,7 @@ public class WaypointScreen extends Screen {
 	}
 
 	private void layoutGroupEditor(WaypointGroup g) {
-		if (nameBox == null || hexBox == null || logoTypeButton == null || logoBlockButton == null || showTextButton == null
-				|| combineSlider == null || ungroupButton == null) {
+		if (nameBox == null || hexBox == null || logoTypeButton == null || logoBlockButton == null || showTextButton == null || ungroupButton == null) {
 			return;
 		}
 		editorContent.addChild(new StringWidget(Component.translatable("waypy.gui.group_members", g.size()), font));
@@ -795,15 +788,11 @@ public class WaypointScreen extends Screen {
 			row1.addChild(showTextButton);
 			editorContent.addChild(row1, s -> s.paddingTop(4));
 			if (logoDetail != null) editorContent.addChild(logoDetail); // under "Logo", in the left column
-			LinearLayout row2 = LinearLayout.horizontal().spacing(COLUMN_GAP);
-			row2.addChild(combineSlider);
-			row2.addChild(ungroupButton);
-			editorContent.addChild(row2);
+			editorContent.addChild(ungroupButton); // alone on its row, in the left column
 		} else {
 			editorContent.addChild(logoTypeButton, s -> s.paddingTop(4));
 			if (logoDetail != null) editorContent.addChild(logoDetail);
 			editorContent.addChild(showTextButton);
-			editorContent.addChild(combineSlider);
 			editorContent.addChild(ungroupButton);
 		}
 	}
@@ -1356,41 +1345,6 @@ public class WaypointScreen extends Screen {
 		protected void applyValue() {
 			waypoint.highlightOpacity = (float) value;
 			manager.markDirty();
-		}
-	}
-
-	/** A group's combine distance, over {@link WaypyConfig#COMBINE_DISTANCE_STEPS} (5..50 by 1, then by 5 up to 200). */
-	private final class CombineDistanceSlider extends AbstractSliderButton {
-		private static final List<Integer> STEPS = WaypyConfig.COMBINE_DISTANCE_STEPS;
-		private final WaypointGroup group;
-
-		CombineDistanceSlider(int width, WaypointGroup group) {
-			super(0, 0, width, DEFAULT_HEIGHT, CommonComponents.EMPTY, position(group.combineDistance));
-			this.group = group;
-			updateMessage();
-		}
-
-		private static double position(int blocks) {
-			int index = STEPS.indexOf(WaypyConfig.snapCombineDistance(blocks));
-			return index / (double) (STEPS.size() - 1);
-		}
-
-		private int blocks() {
-			return STEPS.get((int) Math.round(value * (STEPS.size() - 1)));
-		}
-
-		@Override
-		protected void updateMessage() {
-			setMessage(Component.translatable("waypy.gui.combine_distance.value", blocks()));
-		}
-
-		@Override
-		protected void applyValue() {
-			int blocks = blocks();
-			if (group.combineDistance != blocks) {
-				group.combineDistance = blocks;
-				manager.markDirty();
-			}
 		}
 	}
 }

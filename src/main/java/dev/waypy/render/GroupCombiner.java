@@ -10,6 +10,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 
+import dev.waypy.config.WaypyConfig;
 import dev.waypy.waypoint.Waypoint;
 import dev.waypy.waypoint.WaypointGroup;
 import dev.waypy.waypoint.WaypointManager;
@@ -20,13 +21,13 @@ import dev.waypy.waypoint.WaypointManager;
  *
  * <p>A group counts only its visible members; with fewer than {@link WaypointGroup#MIN_MEMBERS} visible it is never
  * combined. Its centre is the centroid of those members' {@link Waypoint#centre()}s, and its distance the 3D distance
- * from the camera to that centre. The state switches with {@link #HYSTERESIS} blocks either side of the group's
- * combine distance (combined beyond {@code combineDistance + 0.5}, separate again below {@code combineDistance - 0.5}),
- * so standing at the boundary never flickers. {@link #compute} is idempotent for an unchanged camera position, so
+ * from the camera to that centre. The state switches with {@link #HYSTERESIS} blocks either side of the global
+ * "Group Combine Distance" setting, which applies to every group (combined beyond {@code distance + 0.5}, separate
+ * again below {@code distance - 0.5}; read each call, so a settings change takes effect at once), so standing at the boundary never flickers. {@link #compute} is idempotent for an unchanged camera position, so
  * calling it from both renderers in one frame is safe. Render thread only.
  */
 final class GroupCombiner {
-	/** Half-width of the hysteresis band around a group's combine distance, in blocks (1 block in total). */
+	/** Half-width of the hysteresis band around the combine distance, in blocks (1 block in total). */
 	static final double HYSTERESIS = 0.5;
 
 	/** Groups that were combined last time they were computed (absent = not combined). */
@@ -49,6 +50,7 @@ final class GroupCombiner {
 	/** The groups of {@code dimension} with 2+ visible members, with their combined state updated for {@code camera}. */
 	static List<View> compute(ResourceKey<Level> dimension, Vec3 camera) {
 		WaypointManager manager = WaypointManager.get();
+		int combineDistance = WaypyConfig.get().groupCombineDistance;
 		List<View> views = new ArrayList<>();
 		Set<UUID> seen = new HashSet<>();
 		for (WaypointGroup group : manager.groupsIn(dimension)) {
@@ -71,8 +73,8 @@ final class GroupCombiner {
 			double distance = centre.distanceTo(camera);
 			boolean was = COMBINED.contains(group.id);
 			boolean combined = was
-					? distance > group.combineDistance - HYSTERESIS
-					: distance > group.combineDistance + HYSTERESIS;
+					? distance > combineDistance - HYSTERESIS
+					: distance > combineDistance + HYSTERESIS;
 			if (combined) COMBINED.add(group.id);
 			else COMBINED.remove(group.id);
 			seen.add(group.id);

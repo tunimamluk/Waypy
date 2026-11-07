@@ -47,7 +47,6 @@ import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.LevelResource;
 
-import dev.waypy.config.WaypyConfig;
 
 /**
  * Holds the waypoints of the current world and persists them as JSON at
@@ -414,8 +413,7 @@ public final class WaypointManager {
 	/**
 	 * Makes a new group of {@code waypoints} (the menu's "Make group"), in that order, if {@link #canGroup} allows it.
 	 * Waypoints already in a group leave it first (an old group left with fewer than 2 members is dissolved). The new
-	 * group is named {@code Group <n>} (next free number), takes the first member's colour and logo, has its text off
-	 * and the combine distance of the "Group Combine Distance" setting.
+	 * group is named {@code Group <n>} (next free number), takes the first member's colour and logo, and has its text off.
 	 *
 	 * @return the new group, or null if the waypoints can't be grouped
 	 */
@@ -428,7 +426,7 @@ public final class WaypointManager {
 		}
 		Waypoint first = members.getFirst();
 		WaypointGroup group = new WaypointGroup(UUID.randomUUID(), nextFreeGroupName(), first.dimension, first.color,
-				first.logoBlock, WaypyConfig.get().groupCombineDistance);
+				first.logoBlock);
 		group.logoType = first.logoType;
 		for (Waypoint w : members) group.addMemberInternal(group.size(), w.id);
 		groups.add(group);
@@ -771,7 +769,6 @@ public final class WaypointManager {
 		o.addProperty("logoType", g.logoType.name());
 		o.addProperty("logoBlock", g.logoBlock.toString());
 		o.addProperty("showText", g.showText);
-		o.addProperty("combineDistance", g.combineDistance);
 		JsonArray members = new JsonArray();
 		for (UUID id : g.members()) members.add(id.toString());
 		o.add("members", members);
@@ -792,9 +789,8 @@ public final class WaypointManager {
 			Identifier parsed = Identifier.tryParse(o.get("logoBlock").getAsString());
 			if (parsed != null) logo = parsed;
 		}
-		int combine = o.has("combineDistance") ? o.get("combineDistance").getAsInt() : WaypyConfig.DEFAULT_COMBINE_DISTANCE;
 		WaypointGroup g = new WaypointGroup(id, o.has("name") ? o.get("name").getAsString() : "Group", dim,
-				parseColor(o.get("color")), logo, WaypyConfig.snapCombineDistance(combine));
+				parseColor(o.get("color")), logo);
 		g.logoType = parseEnum(LogoType.class, o, "logoType", LogoType.BLOCK);
 		if (o.has("showText")) g.showText = o.get("showText").getAsBoolean();
 		JsonElement members = o.get("members");

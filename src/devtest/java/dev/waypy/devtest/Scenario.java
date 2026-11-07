@@ -771,12 +771,12 @@ final class Scenario {
 		a.color = 0xABCDEF;
 		a.logoType = LogoType.NONE;
 
-		// Create: name, first member's colour/logo, text off, the setting's combine distance, member order.
+		// Create: name, first member's colour/logo, text off, member order.
 		WaypointGroup g = wm.createGroup(List.of(a, b, c));
 		check(g != null && wm.groups().contains(g), "createGroup returned no group");
 		check(g.name.startsWith("Group ") && g.color == 0xABCDEF && g.logoType == LogoType.NONE && g.logoBlock.equals(a.logoBlock)
-				&& !g.showText && g.combineDistance == WaypyConfig.get().groupCombineDistance && g.dimension.equals(dim),
-				"new group defaults wrong: " + g.name + " " + Integer.toHexString(g.color) + " " + g.logoType + " " + g.combineDistance);
+				&& !g.showText && g.dimension.equals(dim),
+				"new group defaults wrong: " + g.name + " " + Integer.toHexString(g.color) + " " + g.logoType);
 		check(wm.members(g).equals(List.of(a, b, c)) && wm.groupOf(b.id) == g && wm.groupOf(d.id) == null, "members wrong: " + names(wm.members(g)));
 
 		// Mixed dimensions: refused, nothing changes. Fewer than 2: refused.
@@ -854,10 +854,11 @@ final class Scenario {
 		mineArea.color = 0xFED83D; // yellow
 		mineArea.logoBlock = Identifier.withDefaultNamespace("iron_pickaxe");
 		mineArea.showText = true;
-		check(mineArea.combineDistance == 15, "default combine distance " + mineArea.combineDistance);
+		check(WaypyConfig.get().groupCombineDistance == WaypyConfig.DEFAULT_COMBINE_DISTANCE,
+				"default combine distance " + WaypyConfig.get().groupCombineDistance);
 		wm.select(beaconBlock.id);
 		wm.markDirty();
-		DevtestClient.log("group Mine Area: " + names(wm.members(mineArea)) + ", combine distance " + mineArea.combineDistance);
+		DevtestClient.log("group Mine Area: " + names(wm.members(mineArea)) + ", combine distance " + WaypyConfig.get().groupCombineDistance + " (global)");
 	}
 
 	/** The group combiner's state for a group (render package, by reflection). */
@@ -874,7 +875,8 @@ final class Scenario {
 
 	/**
 	 * Mine Area alone on screen: near (camera ~13 blocks from the group centre: the members' pins, highlights and
-	 * beam) and far (~35 blocks, beyond the 15-block combine distance: one group pin, no member highlights or beam).
+	 * beam) and far (~35 blocks, beyond the 15-block global combine distance: one group pin, no member highlights or beam). Then the
+	 * global setting is changed at that same camera position: the group must split (50) and combine again (default).
 	 */
 	private void groupWorldShots() {
 		List<Waypoint> hidden = new ArrayList<>();
@@ -900,6 +902,15 @@ final class Scenario {
 		step("check far state, restore", this::noPendingScreenshots, () -> {
 			check(combined(mineArea), "Mine Area not combined at ~35 blocks");
 			DevtestClient.log("ASSERT ok: Mine Area separate near (47_group_near), combined far (48_group_far)");
+			WaypyConfig.get().groupCombineDistance = 50; // same camera position, ~35 blocks away: now inside the distance
+		}, 20);
+		step("check global setting 50 splits the group", this::noPendingScreenshots, () -> {
+			check(!combined(mineArea), "Mine Area still combined at ~35 blocks with the global combine distance 50");
+			WaypyConfig.get().groupCombineDistance = WaypyConfig.DEFAULT_COMBINE_DISTANCE;
+		}, 20);
+		step("check default combine distance restored", this::noPendingScreenshots, () -> {
+			check(combined(mineArea), "Mine Area not combined again at ~35 blocks after restoring the default combine distance");
+			DevtestClient.log("ASSERT ok: global combine distance 50 -> Mine Area separate, default 15 -> combined, same camera position");
 			for (Waypoint w : hidden) w.visible = true;
 			command("tp @a 0.5 " + FEET_Y + " 0.5 0 8");
 		}, 20);
@@ -990,7 +1001,7 @@ final class Scenario {
 		for (WaypointGroup g : wm.groups()) {
 			out.append(g.id).append(" \"").append(g.name).append("\" ").append(g.dimension.identifier()).append(" color=")
 					.append(Integer.toHexString(g.color)).append(' ').append(g.logoType).append(' ').append(g.logoBlock)
-					.append(" text=").append(g.showText).append(" combine=").append(g.combineDistance).append(" members=")
+					.append(" text=").append(g.showText).append(" members=")
 					.append(g.members()).append('\n');
 		}
 		return out.toString();
@@ -1043,13 +1054,27 @@ final class Scenario {
 		WaypointManager wm = WaypointManager.get();
 		var dim = mc.level.dimension();
 		// Groups round-trip: save, reload, the same groups (ids, fields, member order).
-		mineArea.combineDistance = 37;
 		String groupsBefore = describeGroups();
 		check(!groupsBefore.isEmpty(), "no groups before the reload");
 		wm.onDisconnect();
 		wm.onJoin(mc);
 		check(describeGroups().equals(groupsBefore), "groups changed by save/reload:\n" + describeGroups() + "vs\n" + groupsBefore);
 		DevtestClient.log("ASSERT ok: groups round-trip through the file:\n" + groupsBefore.strip());
+
+		// Old file: a group still carrying the removed per-group combineDistance loads fine, the field is ignored and not rewritten.
+		java.nio.file.Path groupFile = mc.gameDirectory.toPath().resolve("waypy").resolve(wm.worldKey() + ".json");
+		wm.onDisconnect();
+		try {
+			var root = com.google.gson.JsonParser.parseString(java.nio.file.Files.readString(groupFile)).getAsJsonObject();
+			check(!root.toString().contains("combineDistance"), "combineDistance was written to the file");
+			root.getAsJsonArray("groups").get(0).getAsJsonObject().addProperty("combineDistance", 37);
+			java.nio.file.Files.writeString(groupFile, new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(root));
+		} catch (java.io.IOException e) {
+			throw new IllegalStateException("could not edit the waypoint file", e);
+		}
+		wm.onJoin(mc);
+		check(describeGroups().equals(groupsBefore), "a group with an old combineDistance field loaded differently:\n" + describeGroups());
+		DevtestClient.log("ASSERT ok: old file with a per-group combineDistance still loads (field ignored)");
 
 		Waypoint doomed = wm.create(new BlockPos(28, SURFACE_Y, -28), dim, null);
 		var doomedId = doomed.id;

@@ -11,7 +11,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 
 /**
- * A named group of 2+ waypoints of one dimension. Far away (beyond {@link #combineDistance}) the renderers draw the
+ * A named group of 2+ waypoints of one dimension. Far away (beyond the global group combine distance setting) the renderers draw the
  * group as ONE pin instead of its members (see {@code docs/DESIGN.md}, Groups).
  *
  * <p>Display state lives in <b>public fields</b>, as on {@link Waypoint}; after changing one, call
@@ -39,18 +39,15 @@ public final class WaypointGroup {
 	public Identifier logoBlock;
 	/** Show the group pin's name tag (if the global Labels setting allows it). Off for new groups. */
 	public boolean showText = false;
-	/** Beyond this distance (blocks, camera to the group's centre) the group is drawn combined, as one pin. */
-	public int combineDistance;
 
 	private final List<UUID> members = new ArrayList<>();
 	private final List<UUID> membersView = Collections.unmodifiableList(members);
 
-	public WaypointGroup(UUID id, String name, ResourceKey<Level> dimension, int color, Identifier logoBlock, int combineDistance) {
+	public WaypointGroup(UUID id, String name, ResourceKey<Level> dimension, int color, Identifier logoBlock) {
 		this.id = Objects.requireNonNull(id);
 		this.dimension = Objects.requireNonNull(dimension);
 		this.color = color & 0xFFFFFF;
 		this.logoBlock = Objects.requireNonNull(logoBlock);
-		this.combineDistance = combineDistance;
 		setName(name);
 	}
 
