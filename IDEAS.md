@@ -6,4 +6,4 @@ When the user says "add an idea", append it here as a new numbered entry: a shor
 
 ## Ideas
 
-1. **Presets**
+1. **Presets** **(done)**: a popup (`H`) of named presets that apply their look to the waypoint you look at or stand on. See "Presets" in `docs/DESIGN.md`.

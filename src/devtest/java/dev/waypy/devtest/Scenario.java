@@ -9,6 +9,8 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import org.lwjgl.glfw.GLFW;
+
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
@@ -17,6 +19,10 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.options.controls.KeyBindsList;
 import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
+import net.minecraft.client.input.CharacterEvent;
+import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.client.input.MouseButtonInfo;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.Identifier;
@@ -26,6 +32,9 @@ import dev.waypy.CreateKeyHandler;
 import dev.waypy.WaypyClient;
 import dev.waypy.config.LabelMode;
 import dev.waypy.config.WaypyConfig;
+import dev.waypy.preset.Preset;
+import dev.waypy.preset.PresetManager;
+import dev.waypy.gui.PresetScreen;
 import dev.waypy.gui.WaypointScreen;
 import dev.waypy.gui.WaypySettingsScreen;
 import dev.waypy.waypoint.LogoType;
@@ -68,6 +77,8 @@ import dev.waypy.waypoint.WaypointStyle;
  * BEACON), all with text on. Seen near (members) and from beyond its 15-block combine distance (one group pin), then
  * hidden as a whole (and shown again) far and near; near, beside the temporary group "Camp" ("Camp Fire", "Camp Bed"),
  * which is also used for the hide-all (Y key) checks and removed afterwards.
+ * Presets (west of the spawn): "Base Camp" (looked at), "Doorstep" (stood on) and the 2-block clump "Wheat Field",
+ * used by {@link #presetChecks()} for the Presets popup (H) and removed afterwards.
  */
 final class Scenario {
 	private static final int SURFACE_Y = -61; // top grass block of the default superflat
@@ -191,6 +202,7 @@ final class Scenario {
 		menuShot("15_menu_clump", () -> floorPatch);
 		menuMoveAndUndo();
 		menuGroups();
+		presetChecks();
 
 		step("open BlockPickerScreen", () -> true, this::openBlockPicker, 30);
 		step("screenshot block picker", this::noPendingScreenshots, () -> {
@@ -1135,6 +1147,431 @@ final class Scenario {
 		}, 5);
 	}
 
+	// ---------------------------------------------------------------- presets
+
+	/** Presets area, west of the spawn (grass surface): the look-at target, the block stood on, a 2-block clump. */
+	private static final BlockPos PRESET_LOOK = new BlockPos(-12, SURFACE_Y, 6);
+	private static final BlockPos PRESET_UNDER = new BlockPos(-12, SURFACE_Y, 2);
+	private static final BlockPos PRESET_CLUMP = new BlockPos(-16, SURFACE_Y, 4);
+	private Waypoint presetLook;
+	private Waypoint presetUnder;
+	private Waypoint presetClump;
+	private PresetScreen presetScreen;
+	/** The presets (as text) before the JSON checks, and the good file content. */
+	private List<String> presetSnapshot;
+
+	/** The canvas presets: name, colour, style, logo block, opacity, through blocks, text. */
+	private static final Object[][] CANVAS_PRESETS = {
+			{"Home", 0x3C44AA, WaypointStyle.BEACON, "red_bed", 0.4f, false, true},
+			{"Mine", 0xF9801D, WaypointStyle.BLOCK_HIGHLIGHT, "iron_ore", 0.55f, true, false},
+			{"Farm", 0x80C71F, WaypointStyle.BLOCK_HIGHLIGHT, "hay_block", 0.3f, false, true},
+			{"Danger", 0xB02E26, WaypointStyle.BEACON, "tnt", 0.4f, false, true},
+			{"Portal", 0x8932B8, WaypointStyle.BLOCK_HIGHLIGHT, "obsidian", 0.65f, true, false},
+			{"Loot", 0xFED83D, WaypointStyle.BLOCK_HIGHLIGHT, "chest", 0.4f, false, true}};
+
+	/** The fields a preset copies, as they are on {@code w} (name, blocks and visibility are compared separately). */
+	private static String copied(Waypoint w) {
+		return "color=" + Integer.toHexString(w.color) + " " + w.style + " " + w.logoType + " " + w.logoBlock + " opacity="
+				+ w.highlightOpacity + " through=" + w.throughBlocks + " text=" + w.showText;
+	}
+
+	/** {@link #copied(Waypoint)} of a waypoint that has {@code p} applied (style as given). */
+	private static String copied(Preset p, WaypointStyle style) {
+		return "color=" + Integer.toHexString(p.color) + " " + style + " " + p.logoType + " " + p.logoBlock + " opacity="
+				+ p.highlightOpacity + " through=" + p.throughBlocks + " text=" + p.showText;
+	}
+
+	private static List<String> presetTexts() {
+		return PresetManager.get().all().stream().map(Preset::toString).toList();
+	}
+
+	private static KeyEvent key(int glfwKey) {
+		return new KeyEvent(glfwKey, 0, 0);
+	}
+
+	/**
+	 * A key press as GLFW delivers it: the key event (press, release), then its character if it has one ({@code '\0'}
+	 * for Esc, Enter, Backspace) and the screen is still open.
+	 */
+	private void press(int glfwKey, char c) {
+		Screen before = mc.gui.screen();
+		if (before == null) return;
+		before.keyPressed(key(glfwKey));
+		before.keyReleased(key(glfwKey));
+		if (c != '\0' && mc.gui.screen() == before) before.charTyped(new CharacterEvent(c));
+	}
+
+	/** Types {@code text} as key + character events (letters and digits only). */
+	private void type(String text) {
+		for (char c : text.toCharArray()) {
+			int k = Character.isDigit(c) ? GLFW.GLFW_KEY_0 + (c - '0') : GLFW.GLFW_KEY_A + (Character.toUpperCase(c) - 'A');
+			press(k, c);
+		}
+	}
+
+	private void clickCentre(Screen screen, net.minecraft.client.gui.components.AbstractWidget button, int mouseButton) {
+		double x = button.getX() + button.getWidth() / 2.0;
+		double y = button.getY() + button.getHeight() / 2.0;
+		MouseButtonEvent event = new MouseButtonEvent(x, y, new MouseButtonInfo(mouseButton, 0));
+		if (screen.mouseClicked(event, false)) screen.mouseReleased(event);
+	}
+
+	/** Moves the (headless) mouse to GUI position ({@code x}, {@code y}), e.g. off the buttons for a clean screenshot. */
+	private void parkMouse(double x, double y) {
+		try {
+			double scale = mc.getWindow().getGuiScale();
+			java.lang.reflect.Field fx = net.minecraft.client.MouseHandler.class.getDeclaredField("xpos");
+			java.lang.reflect.Field fy = net.minecraft.client.MouseHandler.class.getDeclaredField("ypos");
+			fx.setAccessible(true);
+			fy.setAccessible(true);
+			fx.setDouble(mc.mouseHandler, x * scale);
+			fy.setDouble(mc.mouseHandler, y * scale);
+		} catch (ReflectiveOperationException e) {
+			throw new IllegalStateException("could not move the mouse", e);
+		}
+	}
+
+	/** The mouse in the bottom-left corner, away from every widget. */
+	private void parkMouse() {
+		parkMouse(2, mc.getWindow().getGuiScaledHeight() - 2);
+	}
+
+	private PresetScreen openPresets(Waypoint target) {
+		presetScreen = new PresetScreen(target, false);
+		mc.gui.setScreen(presetScreen);
+		return presetScreen;
+	}
+
+	/**
+	 * The Presets popup (H): creates the six canvas presets through the "+" form, checks the target lookup (look-at
+	 * first, then the block stood on), applying (number key, click, search + Enter; a BEACON preset on a clump; no
+	 * target), the search keys, "+" prefill, right-click edit and Delete (renumbering), the block picker round trip,
+	 * the JSON round trip and the corrupt-file fallback; with screenshots of each state.
+	 */
+	private void presetChecks() {
+		step("presets: targets, start empty", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			var dim = mc.level.dimension();
+			for (BlockPos pos : List.of(PRESET_LOOK, PRESET_UNDER, PRESET_CLUMP, PRESET_CLUMP.east())) {
+				check(wm.waypointAt(pos, dim) == null, "preset test block " + pos + " already has a waypoint");
+			}
+			presetLook = wm.create(PRESET_LOOK, dim, Identifier.withDefaultNamespace("grass_block"));
+			presetLook.setName("Base Camp");
+			presetUnder = wm.create(PRESET_UNDER, dim, Identifier.withDefaultNamespace("grass_block"));
+			presetUnder.setName("Doorstep");
+			presetClump = wm.create(PRESET_CLUMP, dim, Identifier.withDefaultNamespace("grass_block"));
+			presetClump.setName("Wheat Field");
+			check(wm.addBlock(presetClump, PRESET_CLUMP.east()) == WaypointManager.AddBlockResult.ADDED && presetClump.isClump(),
+					"preset clump not made");
+			wm.markDirty();
+			PresetManager pm = PresetManager.get();
+			while (pm.size() > 0) pm.remove(pm.size());
+			check(pm.all().isEmpty(), "presets not cleared");
+			// Stand on Doorstep, looking at Base Camp's top face 4 blocks ahead (eye 1.62 above the face: atan(1.62/4) = 22°).
+			command("tp @a -11.5 " + FEET_Y + " 2.5 0 22");
+		}, 30);
+		step("presets: target lookup (look-at, then underfoot, then none)", this::noPendingScreenshots, () -> {
+			check(WaypyClient.findTargetWaypoint(mc) == presetLook, "look-at target is " + WaypyClient.findTargetWaypoint(mc)
+					+ ", expected Base Camp (looked at) over Doorstep (stood on)");
+			command("tp @a -11.5 " + FEET_Y + " 2.5 0 -60"); // look up: only the block stood on
+		}, 20);
+		step("presets: target underfoot", this::noPendingScreenshots, () -> {
+			check(WaypyClient.findTargetWaypoint(mc) == presetUnder, "underfoot target is " + WaypyClient.findTargetWaypoint(mc));
+			command("tp @a -11.5 " + FEET_Y + " 9.5 0 -60"); // free grass, looking up: no target
+		}, 20);
+		step("presets: no target, empty state", this::noPendingScreenshots, () -> {
+			check(WaypyClient.findTargetWaypoint(mc) == null, "a target was found on free ground: " + WaypyClient.findTargetWaypoint(mc));
+			DevtestClient.log("ASSERT ok: preset target = looked-at waypoint (Base Camp) before the one stood on (Doorstep); "
+					+ "stood on when looking at the sky; none on free ground");
+			PresetScreen sc = openPresets(presetLook);
+			check(sc.presetButtons().isEmpty() && sc.mode() == PresetScreen.Mode.LIST, "presets shown with none stored");
+			check(sc.searchBox() != null && !sc.searchBox().isFocused(), "search box focused on open");
+			parkMouse();
+			// Back to the spot looking at Base Camp, for the target of the next shots (the popup pauses nothing here).
+			command("tp @a -11.5 " + FEET_Y + " 2.5 0 22");
+		}, 10);
+		screenshot("66_presets_empty");
+		step("presets: create the six canvas presets via + and Save", this::noPendingScreenshots, () -> {
+			PresetManager pm = PresetManager.get();
+			for (int i = 0; i < CANVAS_PRESETS.length; i++) {
+				Object[] c = CANVAS_PRESETS[i];
+				PresetScreen sc = openPresets(presetLook);
+				check(sc.plusButton() != null && sc.plusButton().active, "no + button");
+				clickCentre(sc, sc.plusButton(), 0);
+				Preset draft = sc.draft();
+				check(sc.mode() == PresetScreen.Mode.FORM && draft != null && sc.editingNumber() == 0, "+ did not open the new form");
+				if (i == 0) {
+					check(draft.name.equals("Base Camp") && draft.sameAs(Preset.from(presetLook, "Base Camp")),
+							"+ prefill " + draft + " differs from Base Camp " + Preset.from(presetLook, "Base Camp"));
+					check(sc.nameBox() != null && sc.nameBox().getValue().equals("Base Camp") && sc.nameBox().isFocused(),
+							"name box not prefilled/focused");
+					check(sc.deleteButton() == null, "Delete shown in the new form");
+				}
+				sc.nameBox().setValue((String) c[0]);
+				draft.color = (int) c[1];
+				draft.style = (WaypointStyle) c[2];
+				draft.logoType = LogoType.BLOCK;
+				draft.logoBlock = Identifier.withDefaultNamespace((String) c[3]);
+				draft.highlightOpacity = (float) c[4];
+				draft.throughBlocks = (boolean) c[5];
+				draft.showText = (boolean) c[6];
+				clickCentre(sc, sc.saveButton(), 0);
+				check(sc.mode() == PresetScreen.Mode.LIST && pm.size() == i + 1 && pm.byNumber(i + 1).name.equals(c[0]),
+						"Save did not add " + c[0] + " as number " + (i + 1) + ": " + presetTexts());
+			}
+			check(presetScreen.visibleNumbers().equals(List.of(1, 2, 3, 4, 5, 6)), "list shows " + presetScreen.visibleNumbers());
+			check(presetScreen.presetButtons().stream().allMatch(b -> b.active), "preset buttons inactive with a target");
+			check(presetScreen.presetButtons().get(0).getMessage().getString().equals("1  Home"), "button text is "
+					+ presetScreen.presetButtons().get(0).getMessage().getString());
+			DevtestClient.log("ASSERT ok: + prefilled from Base Camp (name \"Base Camp\", same settings); Save added Home..Loot as 1..6");
+			// The screenshot target: the popup as H opens it, target found by the real lookup.
+			check(WaypyClient.findTargetWaypoint(mc) == presetLook, "not looking at Base Camp");
+			mc.gui.setScreen(presetScreen = new PresetScreen(WaypyClient.findTargetWaypoint(mc), false));
+			parkMouse();
+		}, 10);
+		screenshot("60_presets_list");
+		step("presets: number key applies to a single waypoint", this::noPendingScreenshots, () -> {
+			Preset mine = PresetManager.get().byNumber(2);
+			String name = presetLook.name;
+			List<BlockPos> blocks = List.copyOf(presetLook.blocks());
+			boolean visible = presetLook.visible;
+			check(!presetScreen.searchBox().isFocused(), "search focused before the number key");
+			press(GLFW.GLFW_KEY_2, '2');
+			check(mc.gui.screen() == null, "popup still open after the number key");
+			check(copied(presetLook).equals(copied(mine, mine.style)), "key 2 applied " + copied(presetLook) + ", expected " + copied(mine, mine.style));
+			check(presetLook.name.equals(name) && presetLook.blocks().equals(blocks) && presetLook.visible == visible
+					&& WaypointManager.get().groupOf(presetLook.id) == null, "applying changed name/blocks/visible/group");
+			DevtestClient.log("ASSERT ok: key 2 (search unfocused) applied Mine to \"" + name + "\": " + copied(presetLook) + "; name, blocks, visible kept");
+		}, 5);
+		step("presets: BEACON preset on a clump", this::noPendingScreenshots, () -> {
+			PresetScreen sc = openPresets(presetClump);
+			Preset home = PresetManager.get().byNumber(1);
+			check(home.style == WaypointStyle.BEACON, "Home is not a beacon preset");
+			clickCentre(sc, sc.presetButtons().get(0), 0);
+			check(mc.gui.screen() == null, "popup still open after the click");
+			check(presetClump.style == WaypointStyle.BLOCK_HIGHLIGHT && !presetClump.isBeacon(), "a clump became a beacon");
+			check(copied(presetClump).equals(copied(home, WaypointStyle.BLOCK_HIGHLIGHT)), "click applied " + copied(presetClump));
+			check(presetClump.size() == 2 && presetClump.name.equals("Wheat Field"), "clump changed");
+			DevtestClient.log("ASSERT ok: clicking Home (BEACON) on the 2-block clump kept BLOCK_HIGHLIGHT, applied the rest: " + copied(presetClump));
+		}, 5);
+		step("presets: no target", this::noPendingScreenshots, () -> {
+			command("tp @a -11.5 " + FEET_Y + " 9.5 0 -60");
+		}, 20);
+		step("presets: no target, nothing applies", this::noPendingScreenshots, () -> {
+			Waypoint target = WaypyClient.findTargetWaypoint(mc);
+			check(target == null, "unexpected target " + target);
+			List<String> before = WaypointManager.get().all().stream().map(Scenario::describe).toList();
+			PresetScreen sc = openPresets(null);
+			check(sc.presetButtons().size() == 6 && sc.presetButtons().stream().noneMatch(b -> b.active), "preset buttons active without a target");
+			check(sc.plusButton() != null && sc.plusButton().active, "+ inactive without a target");
+			press(GLFW.GLFW_KEY_1, '1');
+			clickCentre(sc, sc.presetButtons().get(2), 0);
+			check(mc.gui.screen() == sc && !sc.searchBox().isFocused() && sc.searchBox().getValue().isEmpty(),
+					"no-target key/click closed the popup or typed into the search");
+			check(WaypointManager.get().all().stream().map(Scenario::describe).toList().equals(before), "a preset applied without a target");
+			// "+" without a target starts from the new-waypoint defaults, named "Preset 7"; Cancel stores nothing.
+			int color = WaypointManager.get().peekNextColor();
+			sc.openNewForm();
+			Preset d = sc.draft();
+			check(d != null && d.name.equals("Preset 7") && d.color == color && d.style == WaypointStyle.BLOCK_HIGHLIGHT
+					&& d.logoType == LogoType.BLOCK && d.logoBlock.equals(WaypointManager.DEFAULT_LOGO) && d.highlightOpacity == 0.4f
+					&& !d.throughBlocks && !d.showText, "default draft is " + d);
+			press(GLFW.GLFW_KEY_ESCAPE, '\0');
+			check(sc.mode() == PresetScreen.Mode.LIST && PresetManager.get().size() == 6 && mc.gui.screen() == sc,
+					"Esc in the form did not cancel back to the list");
+			// Hover the last (inactive) button for its tooltip.
+			Button loot = sc.presetButtons().get(5);
+			parkMouse(loot.getX() + 24, loot.getY() + 10);
+			DevtestClient.log("ASSERT ok: no target: 6 buttons inactive, key 1 and a click change nothing; + gives defaults \"Preset 7\"; Esc cancels");
+		}, 10);
+		screenshot("65_presets_no_target");
+		step("presets: search filter", this::noPendingScreenshots, () -> {
+			command("tp @a -11.5 " + FEET_Y + " 2.5 0 22");
+			mc.gui.setScreen(null);
+		}, 20);
+		step("presets: type to search", this::noPendingScreenshots, () -> {
+			PresetScreen sc = openPresets(WaypyClient.findTargetWaypoint(mc));
+			check(sc.target() == presetLook, "target is not Base Camp");
+			check(!sc.searchBox().isFocused(), "search focused on open");
+			type("o");
+			check(sc.searchBox().isFocused() && sc.searchBox().getValue().equals("o"), "a letter did not focus the search and type: \""
+					+ sc.searchBox().getValue() + "\"");
+			check(sc.visibleNumbers().equals(List.of(1, 5, 6)), "\"o\" shows " + sc.visibleNumbers() + ", expected [1, 5, 6] (Home, Portal, Loot)");
+			parkMouse();
+			DevtestClient.log("ASSERT ok: letter focused the search; \"o\" filters to presets 1, 5, 6 (real numbers kept)");
+		}, 10);
+		screenshot("61_presets_search");
+		step("presets: search keys", this::noPendingScreenshots, () -> {
+			PresetScreen sc = presetScreen;
+			// Case-insensitive; Enter applies the first match.
+			sc.searchBox().setValue("");
+			type("LoOt");
+			check(sc.visibleNumbers().equals(List.of(6)), "\"LoOt\" shows " + sc.visibleNumbers());
+			press(GLFW.GLFW_KEY_ENTER, '\0');
+			Preset loot = PresetManager.get().byNumber(6);
+			check(mc.gui.screen() == null && copied(presetLook).equals(copied(loot, loot.style)), "Enter did not apply Loot: " + copied(presetLook));
+			// Digits type into the focused box; Esc clears it (unfocused, still open); then a digit applies.
+			sc = openPresets(presetLook);
+			type("m");
+			check(sc.visibleNumbers().equals(List.of(1, 2, 3)), "\"m\" shows " + sc.visibleNumbers()); // Home, Mine, Farm
+			String beforeDigit = copied(presetLook);
+			type("3");
+			check(sc.searchBox().getValue().equals("m3") && sc.presetButtons().isEmpty() && copied(presetLook).equals(beforeDigit)
+					&& mc.gui.screen() == sc, "a digit in the focused search applied a preset");
+			press(GLFW.GLFW_KEY_ESCAPE, '\0');
+			check(mc.gui.screen() == sc && sc.searchBox().getValue().isEmpty() && !sc.searchBox().isFocused()
+					&& sc.visibleNumbers().size() == 6, "Esc with text did not clear and unfocus the search");
+			press(GLFW.GLFW_KEY_4, '4');
+			Preset danger = PresetManager.get().byNumber(4);
+			check(mc.gui.screen() == null && copied(presetLook).equals(copied(danger, danger.style)), "key 4 after Esc did not apply Danger");
+			// Esc in the focused, empty box closes.
+			sc = openPresets(presetLook);
+			type("x");
+			press(GLFW.GLFW_KEY_BACKSPACE, '\0');
+			check(sc.searchBox().isFocused() && sc.searchBox().getValue().isEmpty(), "backspace did not empty the box");
+			press(GLFW.GLFW_KEY_ESCAPE, '\0');
+			check(mc.gui.screen() == null, "Esc in the empty search box did not close");
+			DevtestClient.log("ASSERT ok: search case-insensitive (\"LoOt\" -> 6), Enter applied Loot; digit typed into the focused box;"
+					+ " Esc cleared+unfocused, then key 4 applied Danger; Esc in the empty box closed");
+		}, 5);
+		step("presets: + prefill form", this::noPendingScreenshots, () -> {
+			// Base Camp as the canvas's "Hidden Cache": lime, Block Selection 40 %, through blocks, chest.
+			presetLook.color = 0x80C71F;
+			presetLook.style = WaypointStyle.BLOCK_HIGHLIGHT;
+			presetLook.logoType = LogoType.BLOCK;
+			presetLook.logoBlock = Identifier.withDefaultNamespace("chest");
+			presetLook.highlightOpacity = 0.4f;
+			presetLook.throughBlocks = true;
+			presetLook.showText = false;
+			PresetScreen sc = openPresets(presetLook);
+			clickCentre(sc, sc.plusButton(), 0);
+			check(sc.draft() != null && sc.draft().sameAs(Preset.from(presetLook, "Base Camp")), "+ prefill " + sc.draft());
+			parkMouse();
+		}, 10);
+		screenshot("62_presets_new_form");
+		step("presets: + Save -> number 7", this::noPendingScreenshots, () -> {
+			PresetScreen sc = presetScreen;
+			sc.nameBox().setValue("Cache");
+			press(GLFW.GLFW_KEY_ENTER, '\0'); // Enter in the name box saves
+			Preset seven = PresetManager.get().byNumber(7);
+			check(sc.mode() == PresetScreen.Mode.LIST && seven != null && seven.name.equals("Cache")
+					&& seven.sameAs(Preset.from(presetLook, "Cache")), "Save gave " + presetTexts());
+			check(sc.visibleNumbers().equals(List.of(1, 2, 3, 4, 5, 6, 7)), "list after Save: " + sc.visibleNumbers());
+			DevtestClient.log("ASSERT ok: + copied Base Camp's settings, Enter saved it as preset 7 \"Cache\"");
+			// Right-click Farm (3): the edit form with Delete.
+			clickCentre(sc, sc.presetButtons().get(2), 1);
+			check(sc.mode() == PresetScreen.Mode.FORM && sc.editingNumber() == 3 && sc.deleteButton() != null
+					&& sc.draft().sameAs(PresetManager.get().byNumber(3)) && sc.draft() != PresetManager.get().byNumber(3),
+					"right-click did not open the edit form for Farm");
+			parkMouse();
+		}, 10);
+		screenshot("63_presets_edit_form");
+		step("presets: edit form, narrow (GUI scale 4)", this::noPendingScreenshots, () -> {
+			mc.options.guiScale().set(4);
+			mc.resizeGui();
+			check(presetScreen.mode() == PresetScreen.Mode.FORM && presetScreen.editingNumber() == 3, "resize lost the edit form");
+			parkMouse();
+		}, 10);
+		screenshot("64_presets_edit_form_narrow");
+		step("presets: list, narrow (GUI scale 4)", this::noPendingScreenshots, () -> {
+			presetScreen.cancelForm();
+			check(presetScreen.mode() == PresetScreen.Mode.LIST && presetScreen.visibleNumbers().size() == 7, "Cancel did not return to the list");
+			parkMouse();
+		}, 10);
+		screenshot("67_presets_list_narrow");
+		step("presets: GUI scale back; edit, block picker, Delete", this::noPendingScreenshots, () -> {
+			mc.options.guiScale().set(2);
+			mc.resizeGui();
+			PresetScreen sc = presetScreen;
+			PresetManager pm = PresetManager.get();
+			// Edit Farm: rename, then pick a block in the picker: the form comes back with the edits.
+			clickCentre(sc, sc.presetButtons().get(2), 1);
+			sc.nameBox().setValue("Farms");
+			check(sc.styleButton() != null && sc.styleButton().getValue() == WaypointStyle.BLOCK_HIGHLIGHT, "Farm's style button");
+			clickCentre(sc, sc.styleButton(), 0); // Block Selection -> Beacon (the opacity row goes away)
+			Button logo = sc.logoBlockButton();
+			check(logo != null, "no logo block button");
+			clickCentre(sc, logo, 0);
+			Screen picker = mc.gui.screen();
+			check(picker != null && picker.getClass().getSimpleName().equals("BlockPickerScreen"), "block button did not open the picker");
+			type("sponge");
+			press(GLFW.GLFW_KEY_ENTER, '\0');
+			check(mc.gui.screen() == sc && sc.mode() == PresetScreen.Mode.FORM && sc.editingNumber() == 3, "picker did not return to the form");
+			check(sc.draft().name.equals("Farms") && sc.draft().style == WaypointStyle.BEACON
+					&& sc.draft().logoBlock.toString().equals("minecraft:sponge") && sc.nameBox().getValue().equals("Farms"),
+					"edits lost over the picker: " + sc.draft());
+			clickCentre(sc, sc.saveButton(), 0);
+			check(pm.size() == 7 && pm.byNumber(3).name.equals("Farms") && pm.byNumber(3).logoBlock.toString().equals("minecraft:sponge"),
+					"edit Save gave " + presetTexts());
+			// Delete Mine (2): the rest move up, 1..6.
+			clickCentre(sc, sc.presetButtons().get(1), 1);
+			check(sc.editingNumber() == 2 && sc.deleteButton() != null, "edit form for Mine not open");
+			clickCentre(sc, sc.deleteButton(), 0);
+			List<String> names = pm.all().stream().map(p -> p.name).toList();
+			check(names.equals(List.of("Home", "Farms", "Danger", "Portal", "Loot", "Cache")), "after Delete: " + names);
+			check(sc.mode() == PresetScreen.Mode.LIST && sc.visibleNumbers().equals(List.of(1, 2, 3, 4, 5, 6)), "not renumbered: " + sc.visibleNumbers());
+			check(sc.presetButtons().get(1).getMessage().getString().equals("2  Farms"), "button 2 reads " + sc.presetButtons().get(1).getMessage().getString());
+			DevtestClient.log("ASSERT ok: right-click edit kept number 3 (\"Farms\", sponge via the block picker, edits kept); "
+					+ "Delete of 2 renumbered to " + names);
+			mc.gui.setScreen(null);
+		}, 5);
+		step("presets: JSON round trip, corrupt file", this::noPendingScreenshots, this::checkPresetFile, 5);
+		step("presets: clean up", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			for (Waypoint w : List.of(presetLook, presetUnder, presetClump)) wm.remove(w.id);
+			wm.expireDeletions(true);
+			command("tp @a 0.5 " + FEET_Y + " 0.5 0 8");
+		}, 20);
+	}
+
+	private void checkPresetFile() {
+		PresetManager pm = PresetManager.get();
+		java.nio.file.Path file = PresetManager.path();
+		try {
+			presetSnapshot = presetTexts();
+			pm.save();
+			String json = java.nio.file.Files.readString(file);
+			com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+			com.google.gson.JsonArray arr = root.getAsJsonArray("presets");
+			check(root.get("version").getAsInt() == 1 && arr.size() == 6, "file has " + arr.size() + " presets");
+			com.google.gson.JsonObject home = arr.get(0).getAsJsonObject();
+			check(home.get("name").getAsString().equals("Home") && home.get("color").getAsString().equals("#3C44AA")
+					&& home.get("style").getAsString().equals("BEACON") && home.get("logoBlock").getAsString().equals("minecraft:red_bed")
+					&& home.get("showText").getAsBoolean() && !home.has("number"), "Home written as " + home);
+			pm.load();
+			check(presetTexts().equals(presetSnapshot), "reload differs:\n" + presetTexts() + "\n" + presetSnapshot);
+			// Corrupt file: no presets, the file moved aside (a later save can't destroy it).
+			java.nio.file.Files.writeString(file, "{ \"presets\": [ {\"name\": \"Broken\", ");
+			pm.load();
+			List<java.nio.file.Path> backups;
+			try (var files = java.nio.file.Files.list(file.getParent())) {
+				backups = files.filter(f -> f.getFileName().toString().startsWith("waypy-presets.json.corrupt-")).toList();
+			}
+			check(pm.size() == 0 && !java.nio.file.Files.exists(file) && backups.size() == 1, "corrupt file: " + pm.size()
+					+ " presets, backups " + backups);
+			for (java.nio.file.Path b : backups) java.nio.file.Files.delete(b);
+			// Bad entries: skipped (not an object) or loaded with defaults for bad fields.
+			java.nio.file.Files.writeString(file, "{\"presets\": [42, {\"name\": \"Odd\", \"color\": \"zz\", \"style\": \"LASER\","
+					+ " \"logoType\": 7, \"highlightOpacity\": 3.5}]}");
+			pm.load();
+			Preset odd = pm.byNumber(1);
+			check(pm.size() == 1 && odd.name.equals("Odd") && odd.style == WaypointStyle.BLOCK_HIGHLIGHT && odd.logoType == LogoType.BLOCK
+					&& odd.highlightOpacity == 1.0f && odd.logoBlock.equals(WaypointManager.DEFAULT_LOGO), "lenient load gave " + presetTexts());
+			// Missing file: no presets.
+			java.nio.file.Files.delete(file);
+			pm.load();
+			check(pm.size() == 0, "missing file loaded " + pm.size() + " presets");
+			// Restore the good file.
+			java.nio.file.Files.writeString(file, json);
+			pm.load();
+			check(presetTexts().equals(presetSnapshot), "restore differs");
+		} catch (java.io.IOException e) {
+			throw new IllegalStateException(e);
+		}
+		DevtestClient.log("ASSERT ok: presets JSON round trip (6 presets, " + file.getFileName() + "), corrupt file -> none + backup,"
+				+ " bad entries skipped/defaulted, missing file -> none");
+	}
+
 	/** Every group (name, fields, members) of the world, for exact before/after comparisons. */
 	private static String describeGroups() {
 		WaypointManager wm = WaypointManager.get();
@@ -1409,7 +1846,8 @@ final class Scenario {
 
 	/** Vanilla Key Binds screen, scrolled to the Waypy category. */
 	private void openKeyBinds() {
-		for (KeyMapping k : List.of(WaypyClient.createKey, WaypyClient.menuKey, WaypyClient.lookModifierKey, WaypyClient.toggleAllKey)) {
+		for (KeyMapping k : List.of(WaypyClient.createKey, WaypyClient.menuKey, WaypyClient.lookModifierKey, WaypyClient.toggleAllKey,
+				WaypyClient.presetsKey)) {
 			check(java.util.Arrays.asList(mc.options.keyMappings).contains(k), k.getName() + " not in options.keyMappings");
 		}
 		var y = com.mojang.blaze3d.platform.InputConstants.Type.KEYSYM.getOrCreate(org.lwjgl.glfw.GLFW.GLFW_KEY_Y);
@@ -1420,6 +1858,20 @@ final class Scenario {
 		}
 		check(sharing.isEmpty(), "other key mappings default to Y: " + sharing);
 		DevtestClient.log("ASSERT ok: key.waypy.toggle_all defaults to Y; no other mapping (vanilla or mod) defaults to Y");
+		var h = com.mojang.blaze3d.platform.InputConstants.Type.KEYSYM.getOrCreate(GLFW.GLFW_KEY_H);
+		check(WaypyClient.presetsKey.getDefaultKey().equals(h) && WaypyClient.presetsKey.getName().equals("key.waypy.presets"),
+				"presets key default is " + WaypyClient.presetsKey.getDefaultKey());
+		List<String> sharingH = new ArrayList<>();
+		for (KeyMapping k : mc.options.keyMappings) {
+			if (k != WaypyClient.presetsKey && k.getDefaultKey().equals(h)) sharingH.add(k.getName());
+		}
+		// The only one is the F3+H debug combo (advanced tooltips), which only acts while F3 is held; vanilla then
+		// suppresses the plain key, and the Key Binds screen flags no conflict between two default bindings.
+		check(sharingH.equals(List.of("key.debug.showAdvancedTooltips"))
+				&& mc.options.keyDebugShowAdvancedTooltips.getCategory() == KeyMapping.Category.DEBUG,
+				"mappings sharing H: " + sharingH);
+		DevtestClient.log("ASSERT ok: key.waypy.presets (\"Open Presets\") defaults to H; the only other H default is the F3+H debug combo "
+				+ sharingH);
 		KeyBindsScreen screen = new KeyBindsScreen(new WaypointScreen(null), mc.options);
 		mc.gui.setScreen(screen);
 		try {

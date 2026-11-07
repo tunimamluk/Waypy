@@ -7,7 +7,7 @@ Client-side Fabric waypoint mod for Minecraft **26.2** (Java 25, Mojang names �
 
 ## User-facing behaviour
 
-All four keys are vanilla `KeyMapping`s in the "Waypy" category, so they are listed and rebindable in Options → Controls → Key Binds:
+All five keys are vanilla `KeyMapping`s in the "Waypy" category, so they are listed and rebindable in Options → Controls → Key Binds:
 
 | Key mapping | Name in Key Binds | Default |
 |---|---|---|
@@ -15,6 +15,7 @@ All four keys are vanilla `KeyMapping`s in the "Waypy" category, so they are lis
 | `key.waypy.look_modifier` | Look-at Modifier | `Left Shift` |
 | `key.waypy.menu` | Open Waypoint Menu | `M` |
 | `key.waypy.toggle_all` | Hide/Show All Waypoints | `Y` |
+| `key.waypy.presets` | Open Presets | `H` |
 
 | Key | Action |
 |---|---|
@@ -23,6 +24,7 @@ All four keys are vanilla `KeyMapping`s in the "Waypy" category, so they are lis
 | `N` released | **Tap** (an extend-or-erase hold still undecided): if W has more than one block, only the pressed block is removed from W, final (`Block removed from "<name>" (<n> blocks left)`; `1 block left` for one); if it was W's only block, the whole waypoint is deleted (`Waypoint "<name>" removed – press N to undo`, undoable for 15 s). An ERASE stroke shows `Removed <n> blocks from "<name>" (<m> left)`. Every other release is silent: an extend keeps everything, the start block included, and a press that restored a waypoint never removes anything. |
 | Look-at Modifier + `N` | Same as `N`, but the block comes from a raycast from the camera (max 512 blocks, ignores fluids). On a miss, show `No block in sight`. Held, the crosshair sweep is the target: it decides EXTEND or ERASE the same way, then paints (extends) or erases. |
 | `M` | Open the Waypy menu with the **selected** waypoint pre-selected. |
+| `H` | In game (no screen open): open the **Presets** popup (see Presets) for the target waypoint, found at the press. Vanilla 26.2's only default on `H` is the debug combo `F3`+`H` (`key.debug.showAdvancedTooltips`, category Debug); vanilla runs debug keys only while `F3` is held and then sends the plain key nowhere, and the Key Binds screen flags no conflict between two default bindings, so the two never clash. |
 | `Y` | In game (no screen open): toggle **hide all** (`WaypyConfig.hideAll`), saved to the config at once so it survives restarts, with an action-bar message naming the bound key: `All waypoints hidden – press Y to show` / `Waypoints shown – press Y to hide` (`WaypyClient.toggleHideAll`). While it is on, NOTHING of Waypy renders (beams, highlights, pins, tags, group pins); `N`, `M` and the menu keep working. Vanilla 26.2 binds nothing to `Y` by default. |
 
 The look-at modifier defaults to Left Shift, the same key as Sneak. That works because vanilla 26.2 keeps every mapping of a key (`KeyMapping.MAP` is `Key → List<KeyMapping>`) and sets all of them down/up, so both report `isDown()`.
@@ -168,7 +170,54 @@ Use only vanilla widgets and textures: `Button`, `EditBox`, `AbstractSliderButto
 - Footer: `Done` (200 px).
 - Changes apply live and save when the screen closes.
 
+The colour swatches and hex box (`ColorPicker`), the block button (`BlockIconButton`) and the opacity slider (`OpacitySlider`) are package-level widgets shared with the preset form.
+
 `BlockPickerScreen`: a vanilla-styled search `EditBox` above a scrollable grid of item icons for all `BuiltInRegistries.BLOCK` entries that have an item. Clicking one sets the logo and returns.
+
+## Presets (`dev.waypy.preset`, `gui.PresetScreen`)
+
+A **preset** is a named set of display settings that can be applied to any waypoint in one step. Presets are **global** (one list for all worlds); none ship by default.
+
+```java
+public final class Preset {      // dev.waypy.preset.Preset
+    String name;                 // max 32 chars
+    int color;                   // 0xRRGGBB
+    WaypointStyle style;
+    LogoType logoType;
+    Identifier logoBlock;
+    float highlightOpacity;      // 0..1
+    boolean throughBlocks;
+    boolean showText;
+}
+```
+
+- A preset's **number** is its position in the list plus one (it is not stored). Deleting a preset renumbers the rest 1..n in order; editing one keeps its number; a new one is appended with the next number. No reordering.
+- **Applying** (`Preset.applyTo(Waypoint)`) copies colour, style, logo type, logo block, opacity, through-blocks and showText. It never copies the name, position, blocks, visible or group. A clump (2+ blocks) can't be a beacon: a `BEACON` preset leaves it at `BLOCK_HIGHLIGHT` and applies the rest. Then `WaypointManager.markDirty()` and the action bar shows `Applied "<preset>" to "<waypoint>"`.
+- `PresetManager` (singleton): `all()`, `size()`, `byNumber(n)`, `numberOf(preset)`, `nextNumber()`, `add(preset)` (→ number), `replace(n, preset)`, `remove(n)`, `load()`, `save()`.
+- **Storage**: `<gameDir>/config/waypy-presets.json` (Gson), loaded at client init and saved at once after every change: `{"version": 1, "presets": [{"name", "color": "#RRGGBB", "style", "logoType", "logoBlock", "highlightOpacity", "throughBlocks", "showText"}, ...]}` in number order. A missing file means no presets. A corrupt file (unparseable, or `presets` not an array) is logged, moved aside to `waypy-presets.json.corrupt-<millis>` (so the next save can't destroy it) and the list starts empty. Entries that aren't objects are skipped; a missing or invalid field gets the new-waypoint default (unknown style/logo type → `BLOCK_HIGHLIGHT`/`BLOCK`, bad colour → the first palette colour (white dye), opacity clamped to 0..1).
+
+**Target.** `WaypyClient.findTargetWaypoint`: first the waypoint whose block is under the crosshair (the Look-at Modifier + `N` raycast, `findLookedAtBlock`, up to 512 blocks), else the waypoint whose block the player stands on (the `N` key's `findBlockBelow`), each looked up with `WaypointManager.waypointAt` in the current dimension; silent (no "No block" messages). It is computed once, when the popup opens.
+
+**`PresetScreen`** (the popup `H` opens), modelled on vanilla's Game Menu (`PauseScreen`): no panel, a centred column of standard vanilla widgets 204 px wide (20 px high, 4 px apart) over vanilla's blurred, dimmed in-game background. There is no "Back to Game" button: `Esc` closes. The column sits a quarter of the way down the free space (its top at most 40 px, like the Game Menu's title), measured with all presets so filtering never moves it.
+- Top row: the title "Presets", centred, and a small vanilla `+` button (20×20) at the column's right edge (tooltip `New preset from "<waypoint>"` / `New preset from the default settings`).
+- A grey `Applies to: <name>` line (the name in white), or `Look at or stand on a waypoint` without a target.
+- A vanilla search `EditBox` (204 px, hint `Search presets...` in vanilla's `SEARCH_HINT_STYLE`).
+- One vanilla button per preset, reading `1  Home` (number, two spaces, name; centred), with the logo's item icon at the left (none for logo `NONE`) and a 6×6 colour swatch in a 1 px black ring at the right. The column scrolls (vanilla `ScrollableLayout` and scrollbar) when the presets don't fit. Without a target the preset buttons are inactive (tooltip `Look at or stand on a waypoint to apply a preset to it`); else the tooltip says `Click or press <n> to apply. Right-click to edit`.
+- With no presets, a grey line `No presets yet – press + to create one`; with a search that matches nothing, `No matching presets`.
+
+Keys and mouse in the list:
+- **Apply**: click a preset button, or press its **number key** 1–9 (number row or keypad, no modifiers) while the search box is **not** focused. Applies to the target and closes. Number keys for missing presets (and `0`) do nothing; without a target nothing applies and the popup stays open.
+- **Search**: the box is not focused when the popup opens. Typing a letter, or any other printable character that is not a digit, focuses it and types that character (the character of a consumed number key, e.g. `&` on AZERTY, is swallowed). Filtering is case-insensitive on the name; the buttons keep their real numbers. While focused, the box takes digits like any text; `Enter` applies the first visible match; `Esc` clears it and unfocuses it if it has text, else closes the popup.
+- **Edit**: right-click a preset button (inactive ones too) opens the inline form in edit mode.
+- Key repeats of the `H` that opened the popup are ignored until `H` is released, so holding it doesn't type `hhh` into the search.
+
+**Inline form** (the same screen switched over; `+` or right-click). Centred, 310 px wide (narrower on small screens, one column below 250 px); the fields scroll (vanilla `ScrollableLayout`) when the screen is too low; the buttons stay under them.
+- Title `New Preset` / `Edit Preset <n>` with a grey sub-line: `Copied from "<waypoint>"`, `Default settings`, or `Presets are shared by all worlds` (edit).
+- Fields, built from the Waypy menu's own widgets (`ColorPicker`, `BlockIconButton`, `OpacitySlider`, shared with `WaypointScreen`): Name `EditBox` (max 32, focused when the form opens), Color (16 swatches and hex box), Style | Logo (`CycleButton`s; Style is never locked, a preset may be a beacon), the block button under Logo for `BLOCK` (opens `BlockPickerScreen`, which returns to the form with the edits kept), Opacity | Render through blocks (Block Selection only), Text (on/off).
+- Buttons: `Save` and `Cancel`, plus `Delete` between them when editing.
+- **New** (`+`): prefilled from the target waypoint's settings with its name; without a target from the new-waypoint defaults (the colour the next waypoint would get, Block Selection, logo `BLOCK` `minecraft:compass`, opacity 40 %, through blocks off, text off) named `Preset <n>` (the next number). Save appends it.
+- **Edit**: the form edits a copy; Save replaces the preset (same number), Delete removes it (the rest renumber). A blank name saves as `Preset <n>`.
+- Save, Cancel and Delete return to the list. `Enter` in the name box saves; `Esc` cancels back to the list.
 
 ## Settings (`dev.waypy.config`, `gui.WaypySettingsScreen`)
 
@@ -186,4 +235,4 @@ Global client settings in `<gameDir>/config/waypy.json` (`WaypyConfig`, Gson). L
 
 `WaypySettingsScreen` extends vanilla `OptionsSubScreen` (title header "Waypy Settings", `OptionsList`, Done footer) and uses vanilla `OptionInstance`s: `SliderableEnum` for the render distance, `IntRange.xmap` sliders for the percentages, `createBoolean` and `Enum` cycle buttons for the rest. Rows: Show Waypoints (310 px), render distance (310 px), then two 150 px columns: Icon Size | Shrink with Distance, Labels | Distance in Label, then Group Combine Distance (310 px, a `SliderableEnum` over `COMBINE_DISTANCE_STEPS`). It is opened from the menu's `Settings...` button. No Mod Menu integration (no 26.2 Mod Menu build could be verified).
 
-All user-visible strings go in `assets/waypy/lang/en_us.json` under the `waypy.` / `key.waypy.` namespaces (settings under `waypy.settings.*`).
+All user-visible strings go in `assets/waypy/lang/en_us.json` under the `waypy.` / `key.waypy.` namespaces (settings under `waypy.settings.*`, presets under `waypy.presets.*`).

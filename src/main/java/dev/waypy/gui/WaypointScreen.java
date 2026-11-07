@@ -16,8 +16,6 @@ import org.lwjgl.glfw.GLFW;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.gui.components.AbstractButton;
-import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Checkbox;
 import net.minecraft.client.gui.components.CycleButton;
@@ -32,9 +30,7 @@ import net.minecraft.client.gui.layouts.GridLayout;
 import net.minecraft.client.gui.layouts.HeaderAndFooterLayout;
 import net.minecraft.client.gui.layouts.LinearLayout;
 import net.minecraft.client.gui.layouts.SpacerElement;
-import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.input.InputWithModifiers;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.RenderPipelines;
@@ -45,7 +41,6 @@ import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.FormattedCharSequence;
-import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -81,12 +76,10 @@ public class WaypointScreen extends Screen {
 	private static final Component POSITION_CLUMP_LABEL = Component.translatable("waypy.gui.position.clump");
 	private static final Component POSITION_INVALID = Component.translatable("waypy.gui.position.invalid");
 	private static final Component COLOR_LABEL = Component.translatable("waypy.gui.color");
-	private static final Component HEX_LABEL = Component.translatable("waypy.gui.color.hex");
 	private static final Component STYLE_LABEL = Component.translatable("waypy.gui.style");
 	private static final Component STYLE_CLUMP_TOOLTIP = Component.translatable("waypy.gui.style.clump_tooltip");
 	private static final Component LOGO_LABEL = Component.translatable("waypy.gui.logo");
 	private static final Component LOGO_BLOCK_TOOLTIP = Component.translatable("waypy.gui.logo_block.tooltip");
-	private static final Component OPACITY_LABEL = Component.translatable("waypy.gui.opacity");
 	private static final Component THROUGH_BLOCKS_LABEL = Component.translatable("waypy.gui.through_blocks");
 	private static final Component VISIBLE_LABEL = Component.translatable("waypy.gui.visible");
 	private static final Component VISIBLE_GROUP_TOOLTIP = Component.translatable("waypy.gui.visible.group_tooltip");
@@ -119,10 +112,6 @@ public class WaypointScreen extends Screen {
 	private static final int EDITOR_SCROLL_RESERVE = 10;
 	private static final int PREFERRED_LIST_WIDTH = 200;
 	private static final int PREFERRED_EDITOR_WIDTH = 310;
-	private static final int SWATCH_SIZE = 11;
-	private static final int SWATCH_GAP = 2;
-	private static final int SWATCH_COLUMNS = 8;
-	private static final int SWATCH_GRID_WIDTH = SWATCH_COLUMNS * SWATCH_SIZE + (SWATCH_COLUMNS - 1) * SWATCH_GAP;
 	private static final int INVALID_TEXT_COLOR = 0xFFFF5555;
 	private static final int SETTINGS_MIN_WIDTH = 70;
 	private static final int SETTINGS_MAX_WIDTH = 90;
@@ -170,7 +159,7 @@ public class WaypointScreen extends Screen {
 	private final List<EditBox> coordBoxes = new ArrayList<>();
 	/** Set while a coordinate box's text is rewritten by code (Y clamping), so its responder ignores it. */
 	private boolean updatingCoordinate;
-	private final List<ColorSwatch> swatches = new ArrayList<>();
+	private @Nullable ColorPicker colorPicker;
 	private @Nullable EditBox hexBox;
 	private @Nullable CycleButton<WaypointStyle> styleButton;
 	private @Nullable CycleButton<LogoType> logoTypeButton;
@@ -431,7 +420,7 @@ public class WaypointScreen extends Screen {
 				if (e instanceof ContainerEventHandler container) container.setFocused(null);
 			});
 		}
-		swatches.clear();
+		colorPicker = null;
 		coordBoxes.clear();
 		nameBox = hexBox = null;
 		styleButton = null;
@@ -483,7 +472,10 @@ public class WaypointScreen extends Screen {
 
 		logoWidgets(half, () -> w.logoType, type -> w.logoType = type, () -> w.logoBlock, id -> w.logoBlock = id);
 
-		opacitySlider = new OpacitySlider(half, w);
+		opacitySlider = new OpacitySlider(half, w.highlightOpacity, value -> {
+			w.highlightOpacity = value;
+			manager.markDirty();
+		});
 
 		throughBlocksBox = Checkbox.builder(THROUGH_BLOCKS_LABEL, font)
 				.maxWidth(half)
@@ -544,26 +536,11 @@ public class WaypointScreen extends Screen {
 
 	/** The 16 dye swatches and the hex box, editing a colour through {@code get}/{@code set}. */
 	private void colorWidgets(IntSupplier get, IntConsumer set) {
-		for (DyeColor dye : DyeColor.values()) {
-			swatches.add(new ColorSwatch(dye, get, set));
-		}
-		EditBox hex = new EditBox(font, hexInline() ? editorWidth - SWATCH_GRID_WIDTH - 8 : editorWidth, Button.DEFAULT_HEIGHT, HEX_LABEL);
-		hex.setMaxLength(7);
-		hex.setHint(Component.literal("#RRGGBB").withStyle(ChatFormatting.DARK_GRAY));
-		hex.setValue(formatHex(get.getAsInt()));
-		hex.setResponder(value -> {
-			Integer color = parseHex(value);
-			if (color == null) {
-				hex.setTextColor(INVALID_TEXT_COLOR);
-				return;
-			}
-			hex.setTextColor(EditBox.DEFAULT_TEXT_COLOR);
-			if (get.getAsInt() != color) {
-				set.accept(color);
-				manager.markDirty();
-			}
+		colorPicker = new ColorPicker(font, ColorPicker.hexWidth(editorWidth), get, color -> {
+			set.accept(color);
+			manager.markDirty();
 		});
-		hexBox = hex;
+		hexBox = colorPicker.hexBox();
 	}
 
 	/** The Logo (Block / None) cycle button and the block button that opens the picker. */
@@ -679,7 +656,7 @@ public class WaypointScreen extends Screen {
 	}
 
 	private boolean hexInline() {
-		return editorWidth - SWATCH_GRID_WIDTH - 8 >= 60;
+		return ColorPicker.hexInline(editorWidth);
 	}
 
 	/** Puts the existing editor widgets into the scrollable layout according to the mode and current style/logo type. */
@@ -831,12 +808,9 @@ public class WaypointScreen extends Screen {
 
 	/** "Color" label, then the swatch grid with the hex box beside it (or under it when narrow). */
 	private void addColorRows() {
-		if (hexBox == null) return;
+		if (hexBox == null || colorPicker == null) return;
 		editorContent.addChild(label(COLOR_LABEL), s -> s.paddingTop(2));
-		GridLayout swatchGrid = new GridLayout().spacing(SWATCH_GAP);
-		for (int i = 0; i < swatches.size(); i++) {
-			swatchGrid.addChild(swatches.get(i), i / SWATCH_COLUMNS, i % SWATCH_COLUMNS);
-		}
+		GridLayout swatchGrid = colorPicker.grid();
 		if (hexInline()) {
 			LinearLayout colorRow = LinearLayout.horizontal().spacing(8);
 			colorRow.addChild(swatchGrid, s -> s.alignVerticallyMiddle());
@@ -1029,33 +1003,18 @@ public class WaypointScreen extends Screen {
 
 	// ------------------------------------------------------------------ helpers
 
-	private static Component styleName(WaypointStyle style) {
+	static Component styleName(WaypointStyle style) {
 		return switch (style) {
 			case BEACON -> Component.translatable("waypy.gui.style.beacon");
 			case BLOCK_HIGHLIGHT -> Component.translatable("waypy.gui.style.block_highlight");
 		};
 	}
 
-	private static Component logoTypeName(LogoType type) {
+	static Component logoTypeName(LogoType type) {
 		return switch (type) {
 			case BLOCK -> Component.translatable("waypy.gui.logo.block");
 			case NONE -> Component.translatable("waypy.gui.logo.none");
 		};
-	}
-
-	static String formatHex(int color) {
-		return String.format(Locale.ROOT, "#%06X", color & 0xFFFFFF);
-	}
-
-	/** Parses {@code #RRGGBB} or {@code RRGGBB}; null if invalid. */
-	static @Nullable Integer parseHex(String text) {
-		String s = text.trim();
-		if (s.startsWith("#")) s = s.substring(1);
-		if (s.length() != 6) return null;
-		for (int i = 0; i < 6; i++) {
-			if (Character.digit(s.charAt(i), 16) < 0) return null;
-		}
-		return Integer.parseInt(s, 16);
 	}
 
 	static ItemStack stackFor(Identifier id) {
@@ -1310,87 +1269,6 @@ public class WaypointScreen extends Screen {
 			public Component getNarration() {
 				return Component.translatable("narrator.select", group.name);
 			}
-		}
-	}
-
-	/** One of the 16 dye-color squares, editing a colour through {@code get}/{@code set}. The current color gets a white border. */
-	private final class ColorSwatch extends AbstractButton {
-		private final int color;
-		private final IntSupplier get;
-		private final IntConsumer set;
-
-		ColorSwatch(DyeColor dye, IntSupplier get, IntConsumer set) {
-			super(0, 0, SWATCH_SIZE, SWATCH_SIZE, Component.translatable("color.minecraft." + dye.getName()));
-			this.color = dye.getTextureDiffuseColor() & 0xFFFFFF;
-			this.get = get;
-			this.set = set;
-			setTooltip(Tooltip.create(getMessage()));
-		}
-
-		@Override
-		public void onPress(InputWithModifiers input) {
-			set.accept(color);
-			manager.markDirty();
-			if (hexBox != null) hexBox.setValue(formatHex(color));
-		}
-
-		@Override
-		protected void extractContents(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
-			boolean current = (get.getAsInt() & 0xFFFFFF) == color;
-			int border = current ? 0xFFFFFFFF : isHoveredOrFocused() ? LIGHT_GRAY : 0xFF000000;
-			int x = getX();
-			int y = getY();
-			graphics.fill(x, y, x + width, y + height, border);
-			graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF000000 | color);
-		}
-
-		@Override
-		protected void updateWidgetNarration(NarrationElementOutput output) {
-			defaultButtonNarrationText(output);
-		}
-	}
-
-	/** A vanilla button showing the logo block's item icon followed by its name. */
-	private static final class BlockIconButton extends Button {
-		private final ItemStack stack;
-
-		BlockIconButton(int width, Identifier block, OnPress onPress) {
-			this(width, stackFor(block), onPress);
-		}
-
-		private BlockIconButton(int width, ItemStack stack, OnPress onPress) {
-			super(0, 0, width, DEFAULT_HEIGHT, stack.getHoverName(), onPress, DEFAULT_NARRATION);
-			this.stack = stack;
-		}
-
-		@Override
-		protected void extractContents(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
-			extractDefaultSprite(graphics);
-			graphics.fakeItem(stack, getX() + 3, getY() + (getHeight() - 16) / 2);
-			graphics.textRendererForWidget(this, GuiGraphicsExtractor.HoveredTextEffects.NONE)
-					.acceptScrollingWithDefaultCenter(getMessage(), getX() + 22, getRight() - 4, getY(), getBottom());
-		}
-	}
-
-	/** Opacity 0–100% for the block-highlight style. */
-	private final class OpacitySlider extends AbstractSliderButton {
-		private final Waypoint waypoint;
-
-		OpacitySlider(int width, Waypoint waypoint) {
-			super(0, 0, width, DEFAULT_HEIGHT, CommonComponents.EMPTY, Math.clamp(waypoint.highlightOpacity, 0.0F, 1.0F));
-			this.waypoint = waypoint;
-			updateMessage();
-		}
-
-		@Override
-		protected void updateMessage() {
-			setMessage(Component.translatable("options.percent_value", OPACITY_LABEL, (int) Math.round(value * 100.0)));
-		}
-
-		@Override
-		protected void applyValue() {
-			waypoint.highlightOpacity = (float) value;
-			manager.markDirty();
 		}
 	}
 }

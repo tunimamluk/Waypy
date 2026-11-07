@@ -24,7 +24,9 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 
 import dev.waypy.config.WaypyConfig;
+import dev.waypy.gui.PresetScreen;
 import dev.waypy.gui.WaypointScreen;
+import dev.waypy.preset.PresetManager;
 import dev.waypy.render.WaypointRenderer;
 import dev.waypy.waypoint.Waypoint;
 import dev.waypy.waypoint.WaypointManager;
@@ -40,6 +42,8 @@ public final class WaypyClient implements ClientModInitializer {
 	public static KeyMapping menuKey;
 	/** Hide/Show All Waypoints (default Y): toggles {@link WaypyConfig#hideAll}. */
 	public static KeyMapping toggleAllKey;
+	/** Open Presets (default H): the presets popup for the waypoint looked at or stood on ({@link PresetScreen}). */
+	public static KeyMapping presetsKey;
 	/**
 	 * Held with {@link #createKey} at the press: use the looked-at block instead of the block stood on. Default Left
 	 * Shift. Vanilla keeps every mapping of a key in {@code KeyMapping.MAP} and updates them all, so sharing the key
@@ -59,8 +63,11 @@ public final class WaypyClient implements ClientModInitializer {
 				new KeyMapping("key.waypy.look_modifier", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_LEFT_SHIFT, CATEGORY));
 		toggleAllKey = KeyMappingHelper.registerKeyMapping(
 				new KeyMapping("key.waypy.toggle_all", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_Y, CATEGORY));
+		presetsKey = KeyMappingHelper.registerKeyMapping(
+				new KeyMapping("key.waypy.presets", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_H, CATEGORY));
 
 		WaypyConfig.load();
+		PresetManager.get().load();
 
 		WaypointManager manager = WaypointManager.get();
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> manager.onJoin(client));
@@ -77,6 +84,11 @@ public final class WaypyClient implements ClientModInitializer {
 			}
 			while (toggleAllKey.consumeClick()) {
 				if (client.player != null && client.gui.screen() == null) toggleHideAll(client);
+			}
+			while (presetsKey.consumeClick()) {
+				if (client.player != null && client.level != null && client.gui.screen() == null) {
+					client.gui.setScreen(new PresetScreen(findTargetWaypoint(client), true));
+				}
 			}
 		});
 
@@ -127,6 +139,23 @@ public final class WaypyClient implements ClientModInitializer {
 		Waypoint waypoint = manager.create(pos, client.level.dimension(), logo);
 		manager.select(waypoint.id);
 		return waypoint;
+	}
+
+	/**
+	 * The waypoint the Presets popup applies to: the one under the crosshair (the Look-at Modifier + N raycast, up to
+	 * {@link #MAX_RAYCAST_DISTANCE} blocks), else the one whose block the player stands on (the N key's block), both
+	 * looked up with {@link WaypointManager#waypointAt} in the current dimension. Silent (no action-bar messages).
+	 *
+	 * @return the target, or null if neither block belongs to a waypoint
+	 */
+	public static @Nullable Waypoint findTargetWaypoint(Minecraft client) {
+		if (client.player == null || client.level == null) return null;
+		WaypointManager manager = WaypointManager.get();
+		BlockPos looked = findLookedAtBlock(client, false);
+		Waypoint target = looked != null ? manager.waypointAt(looked, client.level.dimension()) : null;
+		if (target != null) return target;
+		BlockPos below = findBlockBelow(client, false);
+		return below != null ? manager.waypointAt(below, client.level.dimension()) : null;
 	}
 
 	/**

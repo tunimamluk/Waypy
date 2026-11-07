@@ -119,6 +119,16 @@ public final class WaypointManager {
 		return INSTANCE;
 	}
 
+	/** Colour {@code index} (wrapping) of the palette new waypoints cycle through: the 16 dye colours. */
+	public static int paletteColor(int index) {
+		return PALETTE[Math.floorMod(index, PALETTE.length)];
+	}
+
+	/** The colour the next {@link #create} will give, without using it up (the preset form's defaults). */
+	public synchronized int peekNextColor() {
+		return paletteColor(colorCursor);
+	}
+
 	// ---------------------------------------------------------------- queries
 
 	public synchronized List<Waypoint> all() {
