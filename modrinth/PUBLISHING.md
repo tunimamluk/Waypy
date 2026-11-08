@@ -8,12 +8,14 @@ A manual checklist for creating the Waypy project on [modrinth.com](https://modr
 | `description.md` | the project body (Description tab) |
 | `icon.png` | the project icon, 512×512 |
 | `gallery/*.png` | the gallery images, 1280×720 |
+| `assets/*` | the banner, feature images and GIFs used inside `description.md` (hosted on GitHub, see below) |
 | `../dist/waypy-1.0.0-beta.1.jar` | the jar to upload |
 
 ## 1. Before you start
 
 - [ ] Log in to modrinth.com as **tunimamluk** (link the GitHub account if you like).
 - [ ] Make sure the GitHub repository `tunimamluk/Waypy` is public, so the source and issue links work. Modrinth reviewers check them.
+- [ ] Push `modrinth/assets/` to the `main` branch. The description's images (banner, feature images, GIFs) are not uploaded to Modrinth: `description.md` links to them as `https://raw.githubusercontent.com/tunimamluk/Waypy/main/modrinth/assets/...`. They only show on the page once the repository is public and these files are on `main`. If you rename or move them, update the links in `description.md`.
 - [ ] Build the jar (`./gradlew build`) or use the committed `dist/waypy-1.0.0-beta.1.jar`.
 
 ## 2. Create the project
@@ -37,7 +39,7 @@ Click **Create project**. You land on the project's settings with a draft projec
 - [ ] **Environment** (in newer Modrinth this is per version, in older layouts under General): **Client-side: Required**, **Server-side: Unsupported**. (If the form only offers a single choice, pick **Client-side only**.)
 
 ### Description
-- [ ] Paste the whole of `modrinth/description.md` into the description editor and check the preview (tables, code spans, links).
+- [ ] Paste the whole of `modrinth/description.md` into the description editor and check the preview (banner, feature table, GIFs, `<kbd>` keys, FAQ dropdowns, links). Broken images mean the repository is still private or `modrinth/assets/` is not on `main` yet.
 
 ### Tags
 - [ ] Project type: **Mod**.

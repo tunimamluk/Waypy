@@ -89,6 +89,8 @@ final class Scenario {
 	private static final int FEET_Y = SURFACE_Y + 1;
 	private static final int STEP_TIMEOUT_TICKS = 20 * 60;
 	private static final int MAX_CHUNK_WAIT_TICKS = 20 * 45;
+	/** Optional animation frames for the Modrinth GIFs ({@code WAYPY_DEVTEST_FRAMES=1}); off in the normal run. */
+	private static final boolean FRAMES = System.getenv("WAYPY_DEVTEST_FRAMES") != null;
 
 	private record Step(String name, BooleanSupplier ready, Runnable action, int settleTicks) {
 	}
@@ -242,6 +244,7 @@ final class Scenario {
 
 		step("real-time undo expiry", this::expiryProbeDue, this::checkExpiryProbe, 2);
 		step("load migrations", this::noPendingScreenshots, this::checkLoadMigrations, 2);
+		if (FRAMES) frameSequences();
 		step("finish", this::noPendingScreenshots, () -> {
 			WaypointManager.get().save();
 			if (!screenshotFailures.isEmpty()) {
@@ -2795,6 +2798,180 @@ final class Scenario {
 		if (type == String.class) return "";
 		if (type == Minecraft.class) return mc;
 		return UNSUPPORTED;
+	}
+
+	// ---------------------------------------------------------------- optional animation frames
+
+	/** The invisible marker armor stand used as a free camera for the frame sequences. */
+	private net.minecraft.world.entity.Entity frameCam;
+
+	private static String camTp(double x, double y, double z, float yaw, float pitch) {
+		return String.format(java.util.Locale.ROOT, "tp @e[type=armor_stand,tag=waypy_cam] %.3f %.3f %.3f %.1f %.1f", x, y, z, yaw, pitch);
+	}
+
+	private void frame(String name, Runnable action) {
+		step("frame " + name, this::noPendingScreenshots, action, 4);
+		step("screenshot " + name, this::noPendingScreenshots, () -> takeScreenshot(name), 1);
+	}
+
+	/**
+	 * Only with {@code WAYPY_DEVTEST_FRAMES}: three short frame sequences for the animated GIFs on the Modrinth page
+	 * (screenshots {@code f_paint_NN}, {@code f_group_NN}, {@code f_shrink_NN}). Seen from a free camera (an invisible
+	 * marker armor stand), in an empty area north of the props, with every other waypoint hidden. Everything it creates
+	 * is removed again afterwards.
+	 */
+	private void frameSequences() {
+		List<Waypoint> hidden = new ArrayList<>();
+		List<Waypoint> temp = new ArrayList<>();
+		WaypointGroup[] group = new WaypointGroup[1];
+		int surf = SURFACE_Y, feet = FEET_Y;
+		step("frames: setup", this::noPendingScreenshots, () -> {
+			setConfig(c -> {
+			});
+			for (Waypoint w : WaypointManager.get().all()) {
+				if (w.visible) {
+					w.visible = false;
+					hidden.add(w);
+				}
+			}
+			command("fill -14 " + feet + " -78 30 " + (feet + 10) + " -38 air");
+			command("kill @e[type=armor_stand]");
+			fly(true);
+			command("tp @a 3.5 " + feet + " -38.5 180 30");
+			command("summon armor_stand 3.5 " + (feet + 6) + " -43.5 {Invisible:1b,NoGravity:1b,Marker:1b,Invulnerable:1b,"
+					+ "Tags:[\"waypy_cam\"],Rotation:[180f,38f]}");
+		}, 40);
+		step("frames: wait for chunks", chunksReady(), () -> {
+		}, 10);
+		step("frames: camera entity", () -> {
+			for (var e : mc.level.entitiesForRendering()) {
+				if (e instanceof net.minecraft.world.entity.decoration.ArmorStand) {
+					frameCam = e;
+					return true;
+				}
+			}
+			return false;
+		}, () -> {
+			mc.setCameraEntity(frameCam);
+			// The local player is only drawn when it is the camera, so a mannequin plays the walking player.
+			command("summon mannequin 0.5 " + feet + " -49.5 {hide_description:1b,Rotation:[180f,0f]}");
+		}, 20);
+
+		// 1. Painting a clump: the player walks a U, each new block under the feet joins the waypoint.
+		List<double[]> path = new ArrayList<>();
+		for (double z = -49.5; z >= -55.5; z -= 0.5) path.add(new double[] {0.5, z, 180});
+		for (double x = 1.0; x <= 6.5; x += 0.5) path.add(new double[] {x, -55.5, -90});
+		for (double z = -55.0; z <= -49.5; z += 0.5) path.add(new double[] {6.5, z, 0});
+		for (int i = 0; i < path.size() + 6; i++) {
+			double[] p = path.get(Math.min(i, path.size() - 1));
+			boolean first = i == 0;
+			frame(String.format("f_paint_%02d", i), () -> {
+				command(String.format(java.util.Locale.ROOT, "tp @e[type=mannequin] %.2f %d %.2f %.0f 0", p[0], feet, p[1], p[2]));
+				BlockPos under = new BlockPos((int) Math.floor(p[0]), surf, (int) Math.floor(p[1]));
+				WaypointManager wm = WaypointManager.get();
+				if (first) {
+					Waypoint w = wm.create(under, mc.level.dimension(), Identifier.withDefaultNamespace("hay_block"));
+					w.setName("Farm Border");
+					w.color = 0x80C71F;
+					w.showText = true;
+					temp.add(w);
+				} else if (!temp.getFirst().contains(under)) {
+					check(wm.addBlock(temp.getFirst(), under) == WaypointManager.AddBlockResult.ADDED, "paint frame: " + under);
+				}
+				wm.markDirty();
+			});
+		}
+
+		// 2. A group combining into one pin as the camera moves away (combine distance 15).
+		step("frames: group props", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			for (Waypoint w : temp) wm.remove(w.id);
+			temp.clear();
+			wm.expireDeletions(true);
+			command("kill @e[type=mannequin]");
+			command("tp @a 17.5 " + feet + " -20.5 180 0");
+			command("setblock 14 " + feet + " -62 iron_block");
+			command("fill 18 " + feet + " -63 20 " + feet + " -63 coal_ore");
+			command("setblock 16 " + feet + " -59 barrel");
+			var dim = mc.level.dimension();
+			Waypoint entrance = wm.create(new BlockPos(14, feet, -62), dim, Identifier.withDefaultNamespace("iron_block"));
+			entrance.setName("Mine Entrance");
+			entrance.color = 0xF9801D;
+			entrance.showText = true;
+			Waypoint vein = wm.create(new BlockPos(18, feet, -63), dim, Identifier.withDefaultNamespace("coal_ore"));
+			wm.addBlock(vein, new BlockPos(19, feet, -63));
+			wm.addBlock(vein, new BlockPos(20, feet, -63));
+			vein.setName("Ore Vein");
+			vein.color = 0x474F52;
+			vein.showText = true;
+			Waypoint storage = wm.create(new BlockPos(16, feet, -59), dim, Identifier.withDefaultNamespace("barrel"));
+			storage.setName("Mine Storage");
+			storage.color = 0xB02E26;
+			storage.style = WaypointStyle.BEACON;
+			storage.showText = true;
+			temp.addAll(List.of(entrance, vein, storage));
+			group[0] = wm.createGroup(List.of(entrance, vein, storage));
+			check(group[0] != null, "frames: group not created");
+			group[0].setName("Mine Area");
+			group[0].color = 0xFED83D;
+			group[0].logoBlock = Identifier.withDefaultNamespace("iron_pickaxe");
+			group[0].showText = true;
+			wm.markDirty();
+			command(camTp(16.5, feet + 2.5, -50.5, 180, 12));
+		}, 30);
+		step("frames: wait for chunks (group)", chunksReady(), () -> {
+		}, 10);
+		int groupFrames = 30;
+		for (int i = 0; i < groupFrames; i++) {
+			double t = Math.min(1.0, i / (double) (groupFrames - 6));
+			double z = -50.5 + t * 22.0; // ~11 to ~33 blocks from the group centre
+			double y = feet + 2.5 + t * 3.0;
+			float pitch = (float) (12 - t * 3);
+			frame(String.format("f_group_%02d", i), () -> command(camTp(16.5, y, z, 180, pitch)));
+		}
+
+		// 3. One pin shrinking smoothly as the camera backs away.
+		step("frames: shrink setup", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			for (Waypoint w : temp) wm.remove(w.id);
+			temp.clear();
+			wm.expireDeletions(true);
+			check(wm.groupById(group[0].id).isEmpty(), "frames: group left behind");
+			command("fill 14 " + feet + " -63 20 " + feet + " -59 air");
+			command("setblock -10 " + feet + " -46 emerald_block");
+			Waypoint w = wm.create(new BlockPos(-10, feet, -46), mc.level.dimension(), Identifier.withDefaultNamespace("emerald_block"));
+			w.setName("Emerald Stash");
+			w.color = 0x5E7C16;
+			w.showText = true;
+			temp.add(w);
+			wm.markDirty();
+			command("tp @a 30.5 " + feet + " -45.5 90 0");
+			command(camTp(-4.5, feet + 1.6, -45.5, 90, 10));
+		}, 30);
+		step("frames: wait for chunks (shrink)", chunksReady(), () -> {
+		}, 10);
+		int shrinkFrames = 30;
+		for (int i = 0; i < shrinkFrames; i++) {
+			double t = Math.min(1.0, i / (double) (shrinkFrames - 4));
+			double x = -9.5 + 6 + t * 50.0; // 6 to 56 blocks from the block
+			frame(String.format("f_shrink_%02d", i), () -> command(camTp(x, feet + 1.6, -45.5, 90, 10)));
+		}
+
+		step("frames: clean up", this::noPendingScreenshots, () -> {
+			WaypointManager wm = WaypointManager.get();
+			for (Waypoint w : temp) wm.remove(w.id);
+			temp.clear();
+			wm.expireDeletions(true);
+			mc.setCameraEntity(mc.player);
+			command("kill @e[type=armor_stand]");
+			command("kill @e[type=mannequin]");
+			command("setblock -10 " + feet + " -46 air");
+			for (Waypoint w : hidden) w.visible = true;
+			wm.markDirty();
+			fly(false);
+			command("tp @a 0.5 " + feet + " 0.5 0 8");
+			DevtestClient.log("frames: done (f_paint, f_group, f_shrink)");
+		}, 20);
 	}
 
 	// ---------------------------------------------------------------- step helpers
