@@ -5,47 +5,47 @@
 **Waypy** marks the places you care about and lets you find them again from anywhere. Press one key and a coloured pin with a block icon floats above the spot, with a beacon beam or a tinted block highlight underneath. Hold the key and walk to mark a whole farm, path or building outline as one waypoint. Bundle nearby waypoints into a group and it turns into a single tidy pin when you're far away.
 
 <p align="center">
-  ✅ <b>Client-side only</b> &nbsp;·&nbsp; 🌍 <b>Works on any server</b> &nbsp;·&nbsp; 🧵 <b>Fabric</b> &nbsp;·&nbsp; ⛏️ <b>Minecraft 26.2</b> &nbsp;·&nbsp; 🔇 <b>No chat spam</b>
+  <b>Client-side only</b> &nbsp;·&nbsp; <b>Works on any server</b> &nbsp;·&nbsp; <b>Fabric</b> &nbsp;·&nbsp; <b>Minecraft 26.2</b> &nbsp;·&nbsp; <b>No chat spam</b>
 </p>
 
 ---
 
-## ✨ Features
+## Features
 
 <table>
 <tr>
 <td width="50%" valign="top">
 <img src="https://raw.githubusercontent.com/tunimamluk/Waypy/main/modrinth/assets/pins-and-beams.png" alt="Pins, beams and highlights" width="420"><br>
-<b>📍 Pins, beams and highlights</b><br>
+<b>Pins, beams and highlights</b><br>
 A pin in the waypoint's colour with any block as its icon, plus a beacon beam or a tinted, outlined box. Name and distance are optional.
 </td>
 <td width="50%" valign="top">
 <img src="https://raw.githubusercontent.com/tunimamluk/Waypy/main/modrinth/assets/paint-clump.gif" alt="Painting a clump by walking" width="420"><br>
-<b>🖌️ Paint whole areas</b><br>
+<b>Paint whole areas</b><br>
 Hold <kbd>N</kbd> and walk: every block you step on joins the waypoint, drawn as one merged highlight with a single pin. Up to 256 blocks.
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 <img src="https://raw.githubusercontent.com/tunimamluk/Waypy/main/modrinth/assets/group-combine.gif" alt="A group combining into one pin" width="420"><br>
-<b>🗂️ Groups combine from afar</b><br>
+<b>Groups combine from afar</b><br>
 Far away, a group shows as one pin like <i>Mine Area (3) (34m)</i>. Walk closer and its waypoints fade back in.
 </td>
 <td width="50%" valign="top">
 <img src="https://raw.githubusercontent.com/tunimamluk/Waypy/main/modrinth/assets/pins-shrink.gif" alt="Pins shrinking with distance" width="420"><br>
-<b>🔭 Pins that shrink with distance</b><br>
+<b>Pins that shrink with distance</b><br>
 Pins stay on top of the world and shrink smoothly like real objects, but never so small that you lose them.
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 <img src="https://raw.githubusercontent.com/tunimamluk/Waypy/main/modrinth/assets/presets-popup.png" alt="Presets popup" width="420"><br>
-<b>🎨 Presets</b><br>
+<b>Presets</b><br>
 Save a look (colour, style, icon, opacity, text) once. Press <kbd>H</kbd> on a waypoint and a number key to apply it.
 </td>
 <td width="50%" valign="top">
 <img src="https://raw.githubusercontent.com/tunimamluk/Waypy/main/modrinth/assets/layouts-popup.png" alt="The Layouts tab" width="420"><br>
-<b>🧩 Layout presets</b><br>
+<b>Layout presets</b><br>
 Save a whole group's arrangement and stamp it down somewhere else in one go: repeating builds, farm plots, base outlines.
 </td>
 </tr>
@@ -53,14 +53,14 @@ Save a whole group's arrangement and stamp it down somewhere else in one go: rep
 
 **And also:**
 
-- ↩️ **Undo.** Deleted something by mistake? Press <kbd>N</kbd> on one of its old blocks within 15 seconds (or use the menu's Undo) and it comes back exactly as it was, whole clump included.
-- 🧽 **Walk to erase.** Hold <kbd>N</kbd> on a waypoint and walk back over its blocks to erase them, or tap <kbd>N</kbd> to remove just one block.
-- 🙈 **Hide everything with one key.** <kbd>Y</kbd> hides or shows all waypoints at once.
-- 🔇 **Silent.** Waypy never writes to chat or the action bar.
+- **Undo.** Deleted something by mistake? Press <kbd>N</kbd> on one of its old blocks within 15 seconds (or use the menu's Undo) and it comes back exactly as it was, whole clump included.
+- **Walk to erase.** Hold <kbd>N</kbd> on a waypoint and walk back over its blocks to erase them, or tap <kbd>N</kbd> to remove just one block.
+- **Hide everything with one key.** <kbd>Y</kbd> hides or shows all waypoints at once.
+- **Silent.** Waypy never writes to chat or the action bar.
 
 ---
 
-## 🎮 Controls
+## Controls
 
 | Key | What it does |
 |:---:|---|
@@ -76,7 +76,7 @@ All keys can be rebound under *Options → Controls → Key Binds → Waypy*. Sh
 
 ---
 
-## 🧭 How it works
+## How it works
 
 <table>
 <tr>
@@ -122,7 +122,7 @@ Presets and layouts are shared by all your worlds and servers.
 
 ---
 
-## ⚙️ Settings
+## Settings
 
 Open them with the **Settings...** button in the menu.
 
@@ -143,7 +143,7 @@ Open them with the **Settings...** button in the menu.
 
 ---
 
-## 📦 Requirements
+## Requirements
 
 | What | Version / notes |
 |---|---|
@@ -155,7 +155,7 @@ Open them with the **Settings...** button in the menu.
 
 ---
 
-## ❓ FAQ
+## FAQ
 
 <details>
 <summary><b>Does it work on servers?</b></summary>
